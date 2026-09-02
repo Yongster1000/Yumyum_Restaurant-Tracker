@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Yumyums — Wireframes</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #f4f3ef;
+    margin: 0;
+    padding: 40px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  h1 { font-size: 18px; font-weight: 600; color: #2c2c2a; margin-bottom: 4px; }
+  p.sub { font-size: 13px; color: #73726c; margin-top: 0; margin-bottom: 24px; }
+  .nav {
+    display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; justify-content: center;
+  }
+  .nav button {
+    padding: 8px 16px; border-radius: 20px; border: 1px solid #cfcdc4;
+    background: #fff; font-size: 13px; cursor: pointer; color: #444;
+  }
+  .nav button.active { background: #2c2c2a; color: #fff; border-color: #2c2c2a; }
+
+  .phone {
+    width: 340px; height: 700px; background: #fff; border-radius: 36px;
+    border: 8px solid #1c1c1a; position: relative; overflow: hidden;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+  }
+  .statusbar { height: 24px; background: #fff; }
+  .screen { display: none; flex-direction: column; height: calc(100% - 24px); }
+  .screen.active { display: flex; }
+
+  .header {
+    padding: 14px 16px 10px; display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid #ececec;
+  }
+  .header .title { font-size: 17px; font-weight: 600; color: #2c2c2a; }
+  .icon-btn { width: 28px; height: 28px; border-radius: 50%; background: #f0efe9; display:flex;align-items:center;justify-content:center; font-size:13px; color:#888; }
+
+  .searchbar {
+    margin: 10px 16px; padding: 9px 12px; background: #f0efe9; border-radius: 10px;
+    font-size: 13px; color: #999;
+  }
+  .chips { display: flex; gap: 6px; padding: 0 16px 10px; overflow-x: auto; }
+  .chip { padding: 5px 12px; border-radius: 14px; background: #f0efe9; font-size: 12px; color: #666; white-space: nowrap; }
+  .chip.selected { background: #d85a30; color: #fff; }
+
+  .list { flex: 1; overflow-y: auto; padding: 0 16px; }
+  .card {
+    display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #f0efe9; align-items: center;
+  }
+  .thumb { width: 54px; height: 54px; border-radius: 10px; background: #e4e2d9; flex-shrink: 0; display:flex; align-items:center; justify-content:center; font-size: 10px; color:#aaa;}
+  .avatar { width: 32px; height: 32px; border-radius: 50%; background: #d4c9b0; display:flex;align-items:center;justify-content:center; font-size:11px; color:#7a6a4a; font-weight:600; flex-shrink:0; }
+  .card-body { flex: 1; min-width: 0; }
+  .card-title { font-size: 14px; font-weight: 600; color: #2c2c2a; }
+  .card-sub { font-size: 12px; color: #999; margin-top: 2px; }
+  .tag-row { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+  .tag { font-size: 10px; padding: 2px 7px; border-radius: 8px; background: #f0efe9; color: #888; }
+  .stars { font-size: 12px; color: #d85a30; margin-top: 3px; }
+  .badge-unvisited { font-size: 10px; padding: 2px 7px; border-radius: 8px; background: #e6f1fb; color: #185fa5; margin-top: 3px; display:inline-block; }
+  .add-icon { width: 26px; height: 26px; border-radius: 50%; border: 1px solid #d85a30; color: #d85a30; display:flex; align-items:center; justify-content:center; font-size: 15px; flex-shrink: 0; }
+
+  .fab {
+    position: absolute; bottom: 72px; right: 20px; width: 48px; height: 48px; border-radius: 50%;
+    background: #2c2c2a; color: #fff; font-size: 22px; display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+  }
+
+  .tabbar { display: flex; border-top: 1px solid #ececec; }
+  .tabbar .tab { flex: 1; text-align: center; padding: 10px 0 12px; font-size: 11px; color: #aaa; }
+  .tabbar .tab.active { color: #2c2c2a; font-weight: 600; }
+  .tabbar .tab .dot { width: 20px; height: 20px; margin: 0 auto 3px; border-radius: 6px; background: #ececec; }
+  .tabbar .tab.active .dot { background: #2c2c2a; }
+
+  .form-body { flex: 1; overflow-y: auto; padding: 14px 16px; }
+  .field-label { font-size: 12px; font-weight: 600; color: #666; margin: 14px 0 6px; }
+  .field-label:first-child { margin-top: 0; }
+  .field-input { padding: 10px 12px; border: 1px solid #e0dfd7; border-radius: 8px; font-size: 13px; color: #999; }
+  .dropdown-hint { font-size: 11px; color: #b0aea3; margin-top: 4px; }
+  .chip-select { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip-select .chip { border: 1px solid #e0dfd7; }
+  .chip-select .chip.on { background: #d85a30; color: #fff; border-color: #d85a30; }
+  .chip-select .chip.add { border-style: dashed; color: #aaa; }
+  .star-row { font-size: 22px; color: #ddd; letter-spacing: 2px; }
+  .star-row .filled { color: #d85a30; }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; }
+  .toggle { width: 38px; height: 22px; border-radius: 11px; background: #2c2c2a; position: relative; }
+  .toggle .knob { width: 18px; height: 18px; border-radius: 50%; background: #fff; position: absolute; top: 2px; right: 2px; }
+  .textarea-box { height: 70px; border: 1px solid #e0dfd7; border-radius: 8px; padding: 10px 12px; font-size: 12px; color: #b0aea3; }
+  .photo-row { display: flex; gap: 8px; }
+  .photo-slot { width: 64px; height: 64px; border-radius: 8px; background: #f0efe9; border: 1px dashed #d4d2c8; display: flex; align-items: center; justify-content: center; color: #bbb; font-size: 18px; }
+  .save-btn { margin: 16px 16px 20px; padding: 12px; text-align: center; background: #2c2c2a; color: #fff; border-radius: 10px; font-size: 14px; font-weight: 600; }
+
+  .map-box { height: 100px; margin: 12px 16px 4px; border-radius: 10px; background: #e4e2d9; display: flex; align-items: center; justify-content: center; color: #aaa; font-size: 11px; }
+  .place-meta { padding: 0 16px; }
+  .place-name { font-size: 18px; font-weight: 700; color: #2c2c2a; }
+  .place-addr { font-size: 12px; color: #999; margin-top: 2px; }
+  .review-block { padding: 12px 0; border-bottom: 1px solid #f0efe9; }
+  .review-head { display: flex; align-items: center; gap: 8px; }
+  .review-name { font-size: 13px; font-weight: 600; color: #2c2c2a; }
+  .review-text { font-size: 12px; color: #666; margin-top: 6px; line-height: 1.5; }
+  .review-photos { display: flex; gap: 6px; margin-top: 6px; }
+  .review-photo { width: 40px; height: 40px; border-radius: 6px; background: #e4e2d9; }
+  .section-title { font-size: 12px; font-weight: 600; color: #888; padding: 14px 16px 6px; text-transform: uppercase; letter-spacing: 0.03em;}
+</style>
+</head>
+<body>
+
+<h1>Yumyums — wireframe pass</h1>
+<p class="sub">Low-fidelity screen reference — tap to preview each screen</p>
+
+<div class="nav">
+  <button class="active" onclick="showScreen('own', this)">Own page</button>
+  <button onclick="showScreen('discover', this)">Discover</button>
+  <button onclick="showScreen('add', this)">Add / edit entry</button>
+  <button onclick="showScreen('detail', this)">Place detail</button>
+</div>
+
+<div class="phone">
+  <div class="statusbar"></div>
+
+  <!-- OWN PAGE -->
+  <div class="screen active" id="own">
+    <div class="header"><span class="title">Yumyums</span><span class="icon-btn">i</span></div>
+    <div class="searchbar">Search your saved places</div>
+    <div class="chips">
+      <span class="chip selected">All</span>
+      <span class="chip">Japanese</span>
+      <span class="chip">Italian</span>
+      <span class="chip">Cafe</span>
+      <span class="chip">Unvisited</span>
+    </div>
+    <div class="list">
+      <div class="card">
+        <div class="thumb">photo</div>
+        <div class="card-body">
+          <div class="card-title">Ramen Ya</div>
+          <div class="tag-row"><span class="tag">Japanese</span><span class="tag">Ramen</span></div>
+          <div class="stars">★★★★☆</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="thumb">photo</div>
+        <div class="card-body">
+          <div class="card-title">Trattoria Bella</div>
+          <div class="tag-row"><span class="tag">Italian</span></div>
+          <div class="badge-unvisited">Want to try</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="thumb">photo</div>
+        <div class="card-body">
+          <div class="card-title">Corner Cafe</div>
+          <div class="tag-row"><span class="tag">Cafe</span><span class="tag">Brunch</span></div>
+          <div class="stars">★★★☆☆</div>
+        </div>
+      </div>
+    </div>
+    <div class="fab">+</div>
+    <div class="tabbar">
+      <div class="tab active"><div class="dot"></div>Own</div>
+      <div class="tab"><div class="dot"></div>Discover</div>
+    </div>
+  </div>
+
+  <!-- DISCOVER PAGE -->
+  <div class="screen" id="discover">
+    <div class="header"><span class="title">Discover</span><span class="icon-btn">≡</span></div>
+    <div class="searchbar">Search by user or place</div>
+    <div class="chips">
+      <span class="chip selected">Everyone</span>
+      <span class="chip">Alex</span>
+      <span class="chip">Sam</span>
+    </div>
+    <div class="list">
+      <div class="card">
+        <div class="avatar">A</div>
+        <div class="card-body">
+          <div class="card-title">Ramen Ya</div>
+          <div class="card-sub">saved by Alex</div>
+          <div class="stars">★★★★★</div>
+        </div>
+        <div class="add-icon">+</div>
+      </div>
+      <div class="card">
+        <div class="avatar">S</div>
+        <div class="card-body">
+          <div class="card-title">Sunset Grill</div>
+          <div class="card-sub">saved by Sam</div>
+          <div class="stars">★★★☆☆</div>
+        </div>
+        <div class="add-icon">+</div>
+      </div>
+      <div class="card">
+        <div class="avatar">A</div>
+        <div class="card-body">
+          <div class="card-title">Noodle House</div>
+          <div class="card-sub">saved by Alex</div>
+          <div class="stars">★★★★☆</div>
+        </div>
+        <div class="add-icon">+</div>
+      </div>
+    </div>
+    <div class="tabbar">
+      <div class="tab"><div class="dot"></div>Own</div>
+      <div class="tab active"><div class="dot"></div>Discover</div>
+    </div>
+  </div>
+
+  <!-- ADD/EDIT ENTRY -->
+  <div class="screen" id="add">
+    <div class="header"><span class="icon-btn">‹</span><span class="title">Add place</span><span style="width:28px"></span></div>
+    <div class="form-body">
+      <div class="field-label">Place</div>
+      <div class="field-input">Search or add new restaurant…</div>
+      <div class="dropdown-hint">No match? Tap "add new place" below results</div>
+
+      <div class="field-label">Food type</div>
+      <div class="chip-select">
+        <span class="chip on">Japanese</span>
+        <span class="chip on">Ramen</span>
+        <span class="chip">Korean</span>
+        <span class="chip">BBQ</span>
+        <span class="chip add">+ add new</span>
+      </div>
+
+      <div class="field-label">Visited</div>
+      <div class="toggle-row">
+        <span style="font-size:13px;color:#666;">Mark as visited</span>
+        <div class="toggle"><div class="knob"></div></div>
+      </div>
+
+      <div class="field-label">Rating</div>
+      <div class="star-row"><span class="filled">★★★★</span>☆</div>
+
+      <div class="field-label">Comment</div>
+      <div class="textarea-box">What did you think of this place?</div>
+
+      <div class="field-label">Photos</div>
+      <div class="photo-row">
+        <div class="photo-slot">+</div>
+        <div class="photo-slot">+</div>
+        <div class="photo-slot">+</div>
+      </div>
+    </div>
+    <div class="save-btn">Save entry</div>
+  </div>
+
+  <!-- PLACE DETAIL -->
+  <div class="screen" id="detail">
+    <div class="header"><span class="icon-btn">‹</span><span class="title">Place detail</span><span class="icon-btn">✎</span></div>
+    <div class="map-box">map placeholder</div>
+    <div class="place-meta">
+      <div class="place-name">Ramen Ya</div>
+      <div class="place-addr">123 Orchard Rd, Singapore</div>
+      <div class="tag-row" style="margin-top:6px;"><span class="tag">Japanese</span><span class="tag">Ramen</span></div>
+    </div>
+    <div class="section-title">Reviews (2)</div>
+    <div class="list" style="padding-top:0;">
+      <div class="review-block">
+        <div class="review-head">
+          <div class="avatar">A</div>
+          <div>
+            <div class="review-name">Alex</div>
+            <div class="stars" style="margin-top:0;">★★★★★</div>
+          </div>
+        </div>
+        <div class="review-text">Best tonkotsu broth I've had in a while, will come back for the extra chashu.</div>
+        <div class="review-photos">
+          <div class="review-photo"></div>
+          <div class="review-photo"></div>
+        </div>
+      </div>
+      <div class="review-block">
+        <div class="review-head">
+          <div class="avatar">Y</div>
+          <div>
+            <div class="review-name">You</div>
+            <div class="badge-unvisited">Want to try</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function showScreen(id, btn) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+</script>
+
+</body>
+</html>
