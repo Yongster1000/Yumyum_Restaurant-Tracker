@@ -1,16 +1,15 @@
 import { Link } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, StyleSheet, TextInput } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
+import { Button } from '@/components/button';
+import { UtensilsIcon } from '@/components/icons';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { Colors, Radius, Shadows, Spacing } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 
 export default function SignUpScreen() {
-  const theme = useTheme();
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -34,52 +33,80 @@ export default function SignUpScreen() {
   }
 
   return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedText type="title" style={styles.title}>
-          Create account
-        </ThemedText>
+    <ThemedView type="background" style={styles.container}>
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          <View style={styles.content}>
+            <View style={styles.logo}>
+              <UtensilsIcon size={26} color={Colors.background} />
+            </View>
+            <ThemedText variant="heading" style={styles.title}>
+              Create account
+            </ThemedText>
 
-        <TextInput
-          placeholder="Display name"
-          placeholderTextColor={theme.textSecondary}
-          value={displayName}
-          onChangeText={setDisplayName}
-          style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-        />
-        <TextInput
-          placeholder="Email"
-          placeholderTextColor={theme.textSecondary}
-          autoCapitalize="none"
-          keyboardType="email-address"
-          value={email}
-          onChangeText={setEmail}
-          style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-        />
-        <TextInput
-          placeholder="Password"
-          placeholderTextColor={theme.textSecondary}
-          secureTextEntry
-          value={password}
-          onChangeText={setPassword}
-          style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-        />
+            <View style={styles.field}>
+              <ThemedText variant="body" color="neutral700" style={styles.label}>
+                Display name
+              </ThemedText>
+              <TextInput
+                value={displayName}
+                onChangeText={setDisplayName}
+                placeholder="What should we call you?"
+                placeholderTextColor={Colors.neutral500}
+                style={styles.input}
+              />
+            </View>
+            <View style={styles.field}>
+              <ThemedText variant="body" color="neutral700" style={styles.label}>
+                Email
+              </ThemedText>
+              <TextInput
+                autoCapitalize="none"
+                keyboardType="email-address"
+                value={email}
+                onChangeText={setEmail}
+                placeholder="you@yumyums.app"
+                placeholderTextColor={Colors.neutral500}
+                style={styles.input}
+              />
+            </View>
+            <View style={styles.field}>
+              <ThemedText variant="body" color="neutral700" style={styles.label}>
+                Password
+              </ThemedText>
+              <TextInput
+                secureTextEntry
+                value={password}
+                onChangeText={setPassword}
+                placeholder="••••••••"
+                placeholderTextColor={Colors.neutral500}
+                style={styles.input}
+              />
+            </View>
 
-        {error && <ThemedText themeColor="text">{error}</ThemedText>}
+            {error && (
+              <ThemedText variant="body" color="accent700">
+                {error}
+              </ThemedText>
+            )}
 
-        <Pressable
-          onPress={handleSignUp}
-          disabled={isSubmitting}
-          style={[styles.button, { backgroundColor: theme.text }]}>
-          <ThemedText style={{ color: theme.background }} type="smallBold">
-            {isSubmitting ? 'Creating account…' : 'Sign up'}
-          </ThemedText>
-        </Pressable>
+            <Button block onPress={handleSignUp} disabled={isSubmitting} style={styles.submit} textStyle={styles.submitLabel}>
+              {isSubmitting ? 'Creating account…' : 'Sign up'}
+            </Button>
 
-        <Link href="/(auth)/sign-in" style={styles.link}>
-          <ThemedText type="link">Already have an account? Sign in</ThemedText>
-        </Link>
-      </SafeAreaView>
+            <View style={styles.footer}>
+              <ThemedText variant="body" color="neutral700">
+                Already have an account?{' '}
+              </ThemedText>
+              <Link href="/(auth)/sign-in">
+                <ThemedText variant="bodySemibold" color="text">
+                  Sign in
+                </ThemedText>
+              </Link>
+            </View>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </ThemedView>
   );
 }
@@ -88,30 +115,56 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  safeArea: {
-    flex: 1,
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: 'center',
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.three,
+    paddingHorizontal: Spacing.space6,
+    paddingVertical: Spacing.space8,
+  },
+  content: {
+    gap: Spacing.space3,
+  },
+  logo: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: Colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Shadows.md,
   },
   title: {
-    marginBottom: Spacing.one,
+    fontSize: 34,
+    marginTop: Spacing.space2,
+    marginBottom: Spacing.space2,
+  },
+  field: {
+    gap: 6,
+  },
+  label: {
+    fontSize: 13,
   },
   input: {
-    borderWidth: 1,
-    borderRadius: Spacing.two,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.three,
+    minHeight: 52,
     fontSize: 16,
+    fontFamily: 'Figtree_400Regular',
+    color: Colors.text,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.divider,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.space3,
   },
-  button: {
-    borderRadius: Spacing.two,
-    paddingVertical: Spacing.three,
-    alignItems: 'center',
-    marginTop: Spacing.two,
+  submit: {
+    minHeight: 54,
+    marginTop: Spacing.space3,
   },
-  link: {
-    alignSelf: 'center',
-    marginTop: Spacing.two,
+  submitLabel: {
+    fontSize: 17,
+  },
+  footer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginTop: Spacing.space2,
   },
 });

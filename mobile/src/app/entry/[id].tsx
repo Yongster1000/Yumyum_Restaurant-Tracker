@@ -1,5 +1,6 @@
 import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
+import { StyleSheet } from 'react-native';
 
 import { EntryForm } from '@/components/entry-form';
 import { ThemedText } from '@/components/themed-text';
@@ -23,11 +24,21 @@ export default function EditEntryScreen() {
 
   if (!entry) {
     return (
-      <ThemedView style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        <ThemedText themeColor="textSecondary">Loading…</ThemedText>
+      <ThemedView type="background" style={styles.loading}>
+        <ThemedText variant="body" color="neutral700">
+          Loading…
+        </ThemedText>
       </ThemedView>
     );
   }
 
-  return <EntryForm mode="edit" entry={entry} placeName={entry.place.name} />;
+  return <EntryForm mode="edit" entry={entry} placeName={entry.place.name} placeAddress={entry.place.address} />;
 }
+
+const styles = StyleSheet.create({
+  loading: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});

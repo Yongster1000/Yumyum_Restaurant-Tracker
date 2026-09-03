@@ -1,43 +1,109 @@
+import { File } from 'expo-file-system';
+import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, TextInput } from 'react-native';
+import { useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View,
+} from 'react-native';
 
+import { Button, CircleButton } from '@/components/button';
+import { Card } from '@/components/card';
+import { CameraIcon, StarIcon, UtensilsIcon, XIcon } from '@/components/icons';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { Colors, Radius, Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
+import {
+  autocompletePlaces,
+  createSessionToken,
+  fetchPlaceDetails,
+  type PlaceDetails,
+  type PlacePrediction,
+} from '@/lib/google-places';
 import { supabase } from '@/lib/supabase';
 import type { Entry } from '@/types/database';
 
-// TODO: replace with Google Places autocomplete + fuzzy-match against
-// existing `places` rows (search-before-create flow described in the brief).
-// For now this scaffold takes place name/address as plain text and always
-// creates a new `places` row when adding.
-//
 // TODO: food type multi-select chips (search-before-create against
 // `food_types`, writing to `place_food_types`) are not wired up yet.
+//
+// TODO: this only dedupes against existing `places` by google_place_id (an
+// exact match on the place the user picked from Google). The brief also
+// describes surfacing fuzzy-matched *existing saved places* alongside the
+// Google results while typing — not implemented yet.
 
 type EntryFormProps = {
   mode: 'create' | 'edit';
   entry?: Entry;
   placeName?: string;
+  placeAddress?: string;
   onSaved?: () => void;
 };
 
-export function EntryForm({ mode, entry, placeName, onSaved }: EntryFormProps) {
-  const theme = useTheme();
+export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: EntryFormProps) {
   const router = useRouter();
   const { session } = useAuth();
 
-  const [name, setName] = useState(placeName ?? '');
-  const [address, setAddress] = useState('');
+  const [query, setQuery] = useState('');
+  const [suggestions, setSuggestions] = useState<PlacePrediction[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [sessionToken, setSessionToken] = useState(createSessionToken);
+  const [selectedPlace, setSelectedPlace] = useState<PlaceDetails | null>(null);
   const [visited, setVisited] = useState(entry?.visited ?? false);
   const [rating, setRating] = useState(entry?.rating ?? 0);
   const [comment, setComment] = useState(entry?.comment ?? '');
   const [photoUris, setPhotoUris] = useState<string[]>(entry?.photos ?? []);
   const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    if (mode !== 'create' || selectedPlace) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const results = await autocompletePlaces(query, sessionToken);
+        if (!cancelled) setSuggestions(results);
+      } catch (error) {
+        if (!cancelled) {
+          Alert.alert('Place search failed', error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        if (!cancelled) setIsSearching(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query, sessionToken, mode, selectedPlace]);
+
+  async function handleSelectSuggestion(prediction: PlacePrediction) {
+    setIsSearching(true);
+    try {
+      const details = await fetchPlaceDetails(prediction.placeId, sessionToken);
+      setSelectedPlace(details);
+      setSuggestions([]);
+    } catch (error) {
+      Alert.alert('Could not load place details', error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSearching(false);
+    }
+  }
+
+  function handleChangePlace() {
+    setSelectedPlace(null);
+    setQuery('');
+    setSuggestions([]);
+    setSessionToken(createSessionToken());
+  }
 
   async function pickPhoto() {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -60,11 +126,12 @@ export function EntryForm({ mode, entry, placeName, onSaved }: EntryFormProps) {
       }
       const fileName = uri.split('/').pop() ?? `${Date.now()}.jpg`;
       const path = `${userId}/${entryId}/${fileName}`;
-      const response = await fetch(uri);
-      const blob = await response.blob();
+      // supabase-js's docs call out that Blob/File/FormData bodies "do not
+      // work as intended" on React Native — upload an ArrayBuffer instead.
+      const buffer = await new File(uri).arrayBuffer();
       const { error: uploadError } = await supabase.storage
         .from('entry-photos')
-        .upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+        .upload(path, buffer, { contentType: 'image/jpeg', upsert: true });
       if (uploadError) throw uploadError;
       const { data } = supabase.storage.from('entry-photos').getPublicUrl(path);
       uploadedUrls.push(data.publicUrl);
@@ -79,21 +146,34 @@ export function EntryForm({ mode, entry, placeName, onSaved }: EntryFormProps) {
       let placeId = entry?.place_id;
 
       if (mode === 'create') {
-        // Placeholder dedup key until Google Places autocomplete supplies a
-        // real google_place_id.
-        const { data: place, error: placeError } = await supabase
+        if (!selectedPlace) throw new Error('Pick a place first.');
+
+        // Search-before-create: reuse the existing row if another user has
+        // already saved this exact Google place, instead of duplicating it.
+        const { data: existingPlace, error: lookupError } = await supabase
           .from('places')
-          .insert({
-            google_place_id: `manual-${Date.now()}`,
-            name,
-            address,
-            lat: 0,
-            lng: 0,
-          })
-          .select()
-          .single();
-        if (placeError) throw placeError;
-        placeId = place.id;
+          .select('id')
+          .eq('google_place_id', selectedPlace.placeId)
+          .maybeSingle();
+        if (lookupError) throw lookupError;
+
+        if (existingPlace) {
+          placeId = existingPlace.id;
+        } else {
+          const { data: place, error: placeError } = await supabase
+            .from('places')
+            .insert({
+              google_place_id: selectedPlace.placeId,
+              name: selectedPlace.name,
+              address: selectedPlace.address,
+              lat: selectedPlace.lat,
+              lng: selectedPlace.lng,
+            })
+            .select()
+            .single();
+          if (placeError) throw placeError;
+          placeId = place.id;
+        }
       }
 
       if (!placeId) throw new Error('Missing place for this entry.');
@@ -133,108 +213,336 @@ export function EntryForm({ mode, entry, placeName, onSaved }: EntryFormProps) {
     }
   }
 
+  const canSave = !isSaving && (mode === 'edit' || !!selectedPlace);
+
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <ThemedText type="small" themeColor="textSecondary">
-        Place
-      </ThemedText>
-      <TextInput
-        placeholder="Restaurant name"
-        placeholderTextColor={theme.textSecondary}
-        value={name}
-        onChangeText={setName}
-        editable={mode === 'create'}
-        style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-      />
-      {mode === 'create' && (
-        <TextInput
-          placeholder="Address"
-          placeholderTextColor={theme.textSecondary}
-          value={address}
-          onChangeText={setAddress}
-          style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
-        />
-      )}
+    <ThemedView type="background" style={styles.flex}>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.select({ ios: 90, default: 0 })}>
+        <View style={styles.header}>
+          <ThemedText variant="heading" style={styles.headerTitle}>
+            {mode === 'create' ? 'Add a place' : 'Edit entry'}
+          </ThemedText>
+          <CircleButton size={36} onPress={() => router.back()}>
+            <XIcon size={18} color={Colors.neutral700} />
+          </CircleButton>
+        </View>
 
-      <ThemedView style={styles.row}>
-        <ThemedText>Visited</ThemedText>
-        <Switch value={visited} onValueChange={setVisited} />
-      </ThemedView>
+        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+          <View style={styles.section}>
+            <ThemedText variant="bodySemibold" color="neutral600" style={styles.kicker}>
+              Place
+            </ThemedText>
 
-      {visited && (
-        <ThemedView style={styles.row}>
-          {[1, 2, 3, 4, 5].map((value) => (
-            <Pressable key={value} onPress={() => setRating(value)}>
-              <ThemedText type="title" themeColor={value <= rating ? 'text' : 'textSecondary'}>
-                ★
+            {mode === 'edit' && (
+              <Card style={styles.placeCard}>
+                <View style={styles.placeThumb}>
+                  <UtensilsIcon size={22} color={Colors.accent2700} />
+                </View>
+                <View style={styles.placeInfo}>
+                  <ThemedText variant="heading" style={styles.placeName}>
+                    {placeName}
+                  </ThemedText>
+                  {placeAddress && (
+                    <ThemedText variant="body" color="neutral600" numberOfLines={1} style={styles.placeAddress}>
+                      {placeAddress}
+                    </ThemedText>
+                  )}
+                </View>
+              </Card>
+            )}
+
+            {mode === 'create' && selectedPlace && (
+              <Card style={styles.placeCard}>
+                <View style={styles.placeThumb}>
+                  <UtensilsIcon size={22} color={Colors.accent2700} />
+                </View>
+                <View style={styles.placeInfo}>
+                  <ThemedText variant="heading" style={styles.placeName}>
+                    {selectedPlace.name}
+                  </ThemedText>
+                  <ThemedText variant="body" color="neutral600" numberOfLines={1} style={styles.placeAddress}>
+                    {selectedPlace.address}
+                  </ThemedText>
+                </View>
+                <Button variant="ghost" onPress={handleChangePlace}>
+                  Change
+                </Button>
+              </Card>
+            )}
+
+            {mode === 'create' && !selectedPlace && (
+              <View>
+                <TextInput
+                  placeholder="Search for a restaurant"
+                  placeholderTextColor={Colors.neutral500}
+                  value={query}
+                  onChangeText={setQuery}
+                  style={styles.input}
+                />
+                {isSearching && <ActivityIndicator color={Colors.accent} style={styles.searchSpinner} />}
+                {suggestions.length > 0 && (
+                  <Card style={styles.suggestionList}>
+                    {suggestions.map((suggestion) => (
+                      <Pressable
+                        key={suggestion.placeId}
+                        onPress={() => handleSelectSuggestion(suggestion)}
+                        style={styles.suggestionRow}>
+                        <ThemedText variant="body">{suggestion.text}</ThemedText>
+                      </Pressable>
+                    ))}
+                  </Card>
+                )}
+              </View>
+            )}
+          </View>
+
+          <Card style={styles.visitedCard}>
+            <View style={styles.row}>
+              <ThemedText variant="bodySemibold" style={styles.rowLabel}>
+                Visited
               </ThemedText>
-            </Pressable>
-          ))}
-        </ThemedView>
-      )}
+              <Toggle value={visited} onValueChange={setVisited} />
+            </View>
 
-      <ThemedText type="small" themeColor="textSecondary">
-        Comment
-      </ThemedText>
-      <TextInput
-        placeholder="What did you think?"
-        placeholderTextColor={theme.textSecondary}
-        value={comment}
-        onChangeText={setComment}
-        multiline
-        style={[styles.input, styles.textArea, { color: theme.text, borderColor: theme.backgroundSelected }]}
-      />
+            {visited && (
+              <View style={styles.section}>
+                <ThemedText variant="bodySemibold" color="neutral600" style={styles.kicker}>
+                  Your rating
+                </ThemedText>
+                <View style={styles.starRow}>
+                  {[1, 2, 3, 4, 5].map((value) => (
+                    <Pressable key={value} onPress={() => setRating(value)}>
+                      <StarIcon size={36} active={value <= rating} color={Colors.accent} />
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            )}
+          </Card>
 
-      <Pressable onPress={pickPhoto} style={[styles.secondaryButton, { borderColor: theme.backgroundSelected }]}>
-        <ThemedText type="link">Add photos ({photoUris.length})</ThemedText>
-      </Pressable>
+          <View style={styles.section}>
+            <ThemedText variant="bodySemibold" color="neutral600" style={styles.kicker}>
+              Comment
+            </ThemedText>
+            <TextInput
+              placeholder="What did you think?"
+              placeholderTextColor={Colors.neutral500}
+              value={comment}
+              onChangeText={setComment}
+              multiline
+              style={[styles.input, styles.textArea]}
+            />
+          </View>
 
-      <Pressable
-        onPress={handleSave}
-        disabled={isSaving || !name}
-        style={[styles.button, { backgroundColor: theme.text, opacity: isSaving || !name ? 0.5 : 1 }]}>
-        <ThemedText style={{ color: theme.background }} type="smallBold">
-          {isSaving ? 'Saving…' : 'Save'}
-        </ThemedText>
-      </Pressable>
-    </ScrollView>
+          <View style={styles.section}>
+            <ThemedText variant="bodySemibold" color="neutral600" style={styles.kicker}>
+              Photos
+            </ThemedText>
+            <View style={styles.photoGrid}>
+              {photoUris.map((uri, index) => (
+                <View key={`${uri}-${index}`} style={styles.photoThumbWrapper}>
+                  <Image source={{ uri }} style={styles.photoThumb} />
+                  <Pressable
+                    onPress={() => setPhotoUris((current) => current.filter((_, i) => i !== index))}
+                    style={styles.removePhotoButton}
+                    hitSlop={8}>
+                    <XIcon size={11} color="#fff" strokeWidth={3.2} />
+                  </Pressable>
+                </View>
+              ))}
+              <Pressable onPress={pickPhoto} style={styles.addPhotoTile}>
+                <CameraIcon size={22} color={Colors.neutral700} />
+                <ThemedText variant="body" color="neutral700" style={styles.addPhotoLabel}>
+                  Add
+                </ThemedText>
+              </Pressable>
+            </View>
+          </View>
+
+          <Button block onPress={handleSave} disabled={!canSave} style={styles.saveButton} textStyle={styles.saveButtonLabel}>
+            {isSaving ? 'Saving…' : mode === 'create' ? 'Save this place' : 'Save changes'}
+          </Button>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </ThemedView>
+  );
+}
+
+// Matches the design's pill switch (accent track, off-white thumb) more
+// closely than react-native's platform-styled `Switch` can.
+function Toggle({ value, onValueChange }: { value: boolean; onValueChange: (next: boolean) => void }) {
+  return (
+    <Pressable onPress={() => onValueChange(!value)} style={[styles.toggleTrack, value && styles.toggleTrackOn]}>
+      <View style={styles.toggleThumb} />
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: {
+    flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.space6,
+    paddingTop: Spacing.space6,
+    paddingBottom: Spacing.space2,
+  },
+  headerTitle: {
+    flex: 1,
+    fontSize: 22,
+  },
   container: {
-    padding: Spacing.four,
-    gap: Spacing.two,
+    paddingHorizontal: Spacing.space6,
+    paddingBottom: Spacing.space8,
+    gap: Spacing.space4,
+  },
+  section: {
+    gap: 8,
+  },
+  kicker: {
+    fontSize: 12,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  placeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.space3,
+    borderRadius: Radius.lg,
+  },
+  placeThumb: {
+    width: 52,
+    height: 52,
+    borderRadius: 18,
+    backgroundColor: Colors.accent2200,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  placeInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  placeName: {
+    fontSize: 17,
+  },
+  placeAddress: {
+    fontSize: 13,
   },
   input: {
-    borderWidth: 1,
-    borderRadius: Spacing.two,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.three,
+    minHeight: 52,
     fontSize: 16,
+    fontFamily: 'Figtree_400Regular',
+    color: Colors.text,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.divider,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.space3,
   },
   textArea: {
-    minHeight: 96,
+    minHeight: 104,
+    borderRadius: Radius.lg,
+    paddingVertical: 14,
     textAlignVertical: 'top',
+  },
+  searchSpinner: {
+    marginTop: Spacing.space2,
+  },
+  suggestionList: {
+    marginTop: Spacing.space1,
+    padding: 0,
+    overflow: 'hidden',
+  },
+  suggestionRow: {
+    paddingHorizontal: Spacing.space3,
+    paddingVertical: Spacing.space3,
+  },
+  visitedCard: {
+    gap: Spacing.space4,
+    borderRadius: Radius.lg,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: Spacing.two,
-    gap: Spacing.two,
+    gap: Spacing.space3,
   },
-  secondaryButton: {
-    borderWidth: 1,
-    borderRadius: Spacing.two,
-    paddingVertical: Spacing.three,
-    alignItems: 'center',
-    marginTop: Spacing.two,
+  rowLabel: {
+    flex: 1,
+    fontSize: 17,
   },
-  button: {
-    borderRadius: Spacing.two,
-    paddingVertical: Spacing.three,
+  starRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  photoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  photoThumbWrapper: {
+    position: 'relative',
+  },
+  photoThumb: {
+    width: 84,
+    height: 84,
+    borderRadius: 24,
+  },
+  removePhotoButton: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Colors.neutral900,
     alignItems: 'center',
-    marginTop: Spacing.three,
+    justifyContent: 'center',
+  },
+  addPhotoTile: {
+    width: 84,
+    height: 84,
+    borderRadius: 24,
+    borderWidth: 1.5,
+    borderColor: Colors.neutral400,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  addPhotoLabel: {
+    fontSize: 11,
+  },
+  saveButton: {
+    minHeight: 56,
+    marginTop: Spacing.space2,
+  },
+  saveButtonLabel: {
+    fontSize: 18,
+  },
+  toggleTrack: {
+    width: 56,
+    height: 32,
+    borderRadius: Radius.pill,
+    backgroundColor: Colors.neutral300,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    padding: 3,
+  },
+  toggleTrackOn: {
+    backgroundColor: Colors.accent,
+    justifyContent: 'flex-end',
+  },
+  toggleThumb: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: Colors.background,
   },
 });

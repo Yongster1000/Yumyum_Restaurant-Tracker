@@ -1,11 +1,26 @@
-import { useLocalSearchParams } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { useFocusEffect } from 'expo-router';
-import { FlatList, ScrollView, StyleSheet } from 'react-native';
+import { Image } from 'expo-image';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
+import {
+  FlatList,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+  useWindowDimensions,
+  type NativeSyntheticEvent,
+  type NativeScrollEvent,
+} from 'react-native';
 
+import { Card } from '@/components/card';
+import { CircleButton } from '@/components/button';
+import { ChevronLeftIcon, PencilIcon, StarIcon, UtensilsIcon } from '@/components/icons';
+import { PhotoViewer } from '@/components/photo-viewer';
+import { Tag } from '@/components/tag';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Spacing } from '@/constants/theme';
+import { Colors, Spacing } from '@/constants/theme';
+import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
 import type { Entry, FoodType, Place, User } from '@/types/database';
 
@@ -13,9 +28,15 @@ type EntryWithUser = Entry & { user: User };
 
 export default function PlaceDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
+  const { session } = useAuth();
+  const { width } = useWindowDimensions();
   const [place, setPlace] = useState<Place | null>(null);
   const [foodTypes, setFoodTypes] = useState<FoodType[]>([]);
   const [entries, setEntries] = useState<EntryWithUser[]>([]);
+  const [activePhotoIndex, setActivePhotoIndex] = useState(0);
+  const [viewerVisible, setViewerVisible] = useState(false);
+  const [viewerIndex, setViewerIndex] = useState(0);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -39,85 +60,244 @@ export default function PlaceDetailScreen() {
     }, [load]),
   );
 
+  // All photos across every user's entry for this place, so the hero at the
+  // top can be swiped through instead of only ever showing one.
+  const photos = useMemo(() => Array.from(new Set(entries.flatMap((entry) => entry.photos))), [entries]);
+
+  function handleHeroScroll(event: NativeSyntheticEvent<NativeScrollEvent>) {
+    const index = Math.round(event.nativeEvent.contentOffset.x / width);
+    setActivePhotoIndex(index);
+  }
+
   if (!place) {
     return (
-      <ThemedView style={styles.container}>
-        <ThemedText themeColor="textSecondary">Loading…</ThemedText>
+      <ThemedView type="background" style={styles.loadingContainer}>
+        <ThemedText variant="body" color="neutral700">
+          Loading…
+        </ThemedText>
       </ThemedView>
     );
   }
 
   return (
-    <ScrollView>
-      <ThemedView style={styles.container}>
-        <ThemedText type="title" style={styles.title}>
-          {place.name}
-        </ThemedText>
-        <ThemedText themeColor="textSecondary">{place.address}</ThemedText>
-
-        <ThemedView style={styles.chipRow}>
-          {foodTypes.map((foodType) => (
-            <ThemedView key={foodType.id} type="backgroundElement" style={styles.chip}>
-              <ThemedText type="small">{foodType.name}</ThemedText>
-            </ThemedView>
-          ))}
-        </ThemedView>
-
-        <ThemedText type="subtitle" style={styles.sectionTitle}>
-          Reviews
-        </ThemedText>
-
-        <FlatList
-          data={entries}
-          keyExtractor={(entry) => entry.id}
-          scrollEnabled={false}
-          contentContainerStyle={styles.listContent}
-          renderItem={({ item }) => (
-            <ThemedView type="backgroundElement" style={styles.card}>
-              <ThemedText type="smallBold">{item.user.display_name}</ThemedText>
-              <ThemedText type="small">
-                {item.visited ? `★ ${item.rating ?? '–'}` : 'Want to try'}
-              </ThemedText>
-              {item.comment && <ThemedText type="small">{item.comment}</ThemedText>}
-            </ThemedView>
+    <ThemedView type="background" style={styles.container}>
+      <ScrollView>
+        <View style={styles.hero}>
+          {photos.length > 0 ? (
+            <FlatList
+              data={photos}
+              keyExtractor={(uri) => uri}
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              onMomentumScrollEnd={handleHeroScroll}
+              renderItem={({ item, index }) => (
+                <Pressable
+                  onPress={() => {
+                    setViewerIndex(index);
+                    setViewerVisible(true);
+                  }}>
+                  <Image source={{ uri: item }} style={[styles.heroImage, { width }]} />
+                </Pressable>
+              )}
+            />
+          ) : (
+            <View style={[styles.heroImage, styles.heroPlaceholder]}>
+              <UtensilsIcon size={54} color={Colors.accent2700} />
+            </View>
           )}
-        />
-      </ThemedView>
-    </ScrollView>
+
+          {photos.length > 1 && (
+            <View style={styles.dotsRow} pointerEvents="none">
+              {photos.map((_, index) => (
+                <View key={index} style={[styles.dot, index === activePhotoIndex && styles.dotActive]} />
+              ))}
+            </View>
+          )}
+
+          <CircleButton onPress={() => router.back()} size={44} style={styles.backButton}>
+            <ChevronLeftIcon size={20} color={Colors.text} />
+          </CircleButton>
+        </View>
+
+        <View style={styles.content}>
+          <ThemedText variant="heading" style={styles.name}>
+            {place.name}
+          </ThemedText>
+          <ThemedText variant="body" color="neutral700" style={styles.address}>
+            {place.address}
+          </ThemedText>
+
+          {foodTypes.length > 0 && (
+            <View style={styles.tagRow}>
+              {foodTypes.map((foodType, index) => (
+                <Tag key={foodType.id} variant={index === 0 ? 'accent' : 'accent2'} style={styles.tag}>
+                  {foodType.name}
+                </Tag>
+              ))}
+            </View>
+          )}
+
+          <ThemedText variant="heading" style={styles.reviewsTitle}>
+            Reviews
+          </ThemedText>
+
+          <View style={styles.reviewList}>
+            {entries.map((entry) => (
+              <Card key={entry.id} style={styles.reviewCard}>
+                <View style={styles.reviewHeader}>
+                  <View style={styles.reviewAvatar}>
+                    <ThemedText variant="heading" color="accent2800" style={styles.reviewAvatarLabel}>
+                      {entry.user.display_name.charAt(0).toUpperCase()}
+                    </ThemedText>
+                  </View>
+                  <ThemedText variant="bodyBold" style={styles.reviewName}>
+                    {entry.user.display_name}
+                  </ThemedText>
+                  {entry.visited && (
+                    <View style={styles.starRow}>
+                      {[1, 2, 3, 4, 5].map((value) => (
+                        <StarIcon key={value} size={14} active={value <= (entry.rating ?? 0)} color={Colors.accent} />
+                      ))}
+                    </View>
+                  )}
+                  {entry.user_id === session?.user.id && (
+                    <CircleButton
+                      size={30}
+                      backgroundColor={Colors.accent100}
+                      onPress={() => router.push({ pathname: '/entry/[id]', params: { id: entry.id } })}>
+                      <PencilIcon size={14} color={Colors.accent700} />
+                    </CircleButton>
+                  )}
+                </View>
+                {entry.comment ? (
+                  <ThemedText variant="body" style={styles.reviewComment}>
+                    {entry.comment}
+                  </ThemedText>
+                ) : !entry.visited ? (
+                  <Tag variant="outline">Want to try</Tag>
+                ) : null}
+              </Card>
+            ))}
+          </View>
+        </View>
+      </ScrollView>
+
+      <PhotoViewer
+        photos={photos}
+        initialIndex={viewerIndex}
+        visible={viewerVisible}
+        onClose={() => setViewerVisible(false)}
+      />
+    </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: Spacing.four,
-    gap: Spacing.three,
   },
-  title: {
-    fontSize: 28,
-    lineHeight: 34,
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  chipRow: {
+  hero: {
+    height: 280,
+    borderBottomLeftRadius: 44,
+    borderBottomRightRadius: 44,
+    overflow: 'hidden',
+    backgroundColor: Colors.neutral300,
+  },
+  heroImage: {
+    width: '100%',
+    height: '100%',
+  },
+  heroPlaceholder: {
+    backgroundColor: Colors.accent2200,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backButton: {
+    position: 'absolute',
+    top: 16,
+    left: Spacing.space4,
+  },
+  dotsRow: {
+    position: 'absolute',
+    bottom: 14,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.5)',
+  },
+  dotActive: {
+    backgroundColor: '#fff',
+    width: 16,
+  },
+  content: {
+    padding: Spacing.space6,
+    gap: Spacing.space3,
+  },
+  name: {
+    fontSize: 34,
+  },
+  address: {
+    fontSize: 15,
+  },
+  tagRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: Spacing.two,
+    gap: 8,
+    marginTop: 2,
   },
-  chip: {
-    borderRadius: Spacing.five,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.one,
+  tag: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
   },
-  sectionTitle: {
+  reviewsTitle: {
     fontSize: 20,
-    lineHeight: 26,
-    marginTop: Spacing.two,
+    marginTop: Spacing.space4,
   },
-  listContent: {
-    gap: Spacing.two,
+  reviewList: {
+    gap: Spacing.space3,
   },
-  card: {
-    borderRadius: Spacing.three,
-    padding: Spacing.three,
-    gap: Spacing.half,
+  reviewCard: {
+    gap: 8,
+  },
+  reviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  reviewAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: Colors.accent2300,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewAvatarLabel: {
+    fontSize: 15,
+  },
+  reviewName: {
+    flex: 1,
+    fontSize: 15,
+  },
+  starRow: {
+    flexDirection: 'row',
+    gap: 2,
+  },
+  reviewComment: {
+    fontSize: 15,
+    lineHeight: 22,
   },
 });

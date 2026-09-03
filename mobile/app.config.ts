@@ -41,10 +41,11 @@ const config: ExpoConfig = {
   plugins: [
     'expo-router',
     'expo-image-picker',
+    'expo-font',
     [
       'expo-splash-screen',
       {
-        backgroundColor: '#208AEF',
+        backgroundColor: '#f5ead8',
         image: './assets/images/splash-icon.png',
         imageWidth: 76,
       },

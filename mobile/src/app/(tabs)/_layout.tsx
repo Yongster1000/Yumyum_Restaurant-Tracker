@@ -1,6 +1,5 @@
-import { Redirect } from 'expo-router';
+import { Redirect, Slot } from 'expo-router';
 
-import AppTabs from '@/components/app-tabs';
 import { useAuth } from '@/lib/auth-context';
 
 export default function TabLayout() {
@@ -10,5 +9,7 @@ export default function TabLayout() {
     return <Redirect href="/(auth)/sign-in" />;
   }
 
-  return <AppTabs />;
+  // The floating pill tab bar is drawn per-screen (see components/floating-tab-bar.tsx)
+  // rather than by a navigator, matching the design's absolutely-positioned overlay.
+  return <Slot />;
 }
