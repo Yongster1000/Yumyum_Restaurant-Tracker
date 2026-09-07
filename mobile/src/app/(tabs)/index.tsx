@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import { Link, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { FlatList, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Button } from '@/components/button';
@@ -15,6 +15,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { BottomTabInset, Colors, Radius, Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
+import { getPlacePhotoUrl } from '@/lib/google-places';
 import { supabase } from '@/lib/supabase';
 import type { Entry, FoodType, Place } from '@/types/database';
 
@@ -96,17 +97,20 @@ export default function OwnScreen() {
               <SearchBar value={query} onChangeText={setQuery} placeholder="Search your saved places" />
             </View>
 
-            <FlatList
+            <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
-              data={foodTypeFilters}
-              keyExtractor={(name) => name}
               contentContainerStyle={styles.chipRow}
-              style={styles.chipList}
-              renderItem={({ item: filterName }) => (
-                <Chip label={filterName} selected={filterName === activeFilter} onPress={() => setActiveFilter(filterName)} />
-              )}
-            />
+              style={styles.chipList}>
+              {foodTypeFilters.map((filterName) => (
+                <Chip
+                  key={filterName}
+                  label={filterName}
+                  selected={filterName === activeFilter}
+                  onPress={() => setActiveFilter(filterName)}
+                />
+              ))}
+            </ScrollView>
           </>
         )}
 
@@ -146,6 +150,7 @@ export default function OwnScreen() {
           </View>
         ) : (
           <FlatList
+            style={styles.entriesList}
             data={filteredEntries}
             keyExtractor={(entry) => entry.id}
             contentContainerStyle={styles.listContent}
@@ -156,12 +161,22 @@ export default function OwnScreen() {
                 No places match your search/filter.
               </ThemedText>
             }
-            renderItem={({ item }) => (
+            renderItem={({ item }) => {
+              const thumbUri =
+                (item.place.google_photo_name ? getPlacePhotoUrl(item.place.google_photo_name) : null) ??
+                item.photos[0] ??
+                null;
+              return (
               <Link href={{ pathname: '/place/[id]', params: { id: item.place_id } }} asChild>
                 <Pressable>
                   <Card style={styles.entryCard}>
-                    {item.photos[0] ? (
-                      <Image source={{ uri: item.photos[0] }} style={styles.thumb} />
+                    {item.place.cost_bracket && (
+                      <ThemedText variant="bodySemibold" color="neutral600" style={styles.priceBadge}>
+                        {item.place.cost_bracket}
+                      </ThemedText>
+                    )}
+                    {thumbUri ? (
+                      <Image source={{ uri: thumbUri }} style={styles.thumb} />
                     ) : (
                       <View style={[styles.thumb, styles.thumbPlaceholder]}>
                         <UtensilsIcon size={26} color={Colors.accent2700} />
@@ -194,7 +209,8 @@ export default function OwnScreen() {
                   </Card>
                 </Pressable>
               </Link>
-            )}
+              );
+            }}
           />
         )}
       </SafeAreaView>
@@ -241,9 +257,13 @@ const styles = StyleSheet.create({
     flexGrow: 0,
   },
   chipRow: {
+    alignItems: 'center',
     gap: 8,
     paddingHorizontal: Spacing.space6,
     paddingVertical: Spacing.space3,
+  },
+  entriesList: {
+    flex: 1,
   },
   listContent: {
     gap: Spacing.space3,
@@ -276,7 +296,13 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   entryName: {
-    fontSize: 19,
+    fontSize: 16,
+  },
+  priceBadge: {
+    position: 'absolute',
+    top: 10,
+    right: 12,
+    fontSize: 13,
   },
   tagRow: {
     flexDirection: 'row',

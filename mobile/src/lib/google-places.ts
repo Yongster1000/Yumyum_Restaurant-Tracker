@@ -18,6 +18,21 @@ export type PlaceDetails = {
   address: string;
   lat: number;
   lng: number;
+  photoName: string | null;
+  costBracket: string | null;
+  foodType: string | null;
+};
+
+// Google's `priceLevel` enum (Places API (New)) mapped to a `$`-style bracket
+// for display. A place with no price data comes back as `undefined` or
+// `PRICE_LEVEL_UNSPECIFIED`, neither of which is in this map, so the lookup
+// falls through to `null` below.
+const PRICE_LEVEL_BRACKETS: Record<string, string> = {
+  PRICE_LEVEL_FREE: 'Free',
+  PRICE_LEVEL_INEXPENSIVE: '$',
+  PRICE_LEVEL_MODERATE: '$$',
+  PRICE_LEVEL_EXPENSIVE: '$$$',
+  PRICE_LEVEL_VERY_EXPENSIVE: '$$$$',
 };
 
 // Groups an autocomplete session (keystrokes + the resulting details fetch)
@@ -71,7 +86,8 @@ export async function fetchPlaceDetails(
     {
       headers: {
         'X-Goog-Api-Key': API_KEY,
-        'X-Goog-FieldMask': 'id,displayName,formattedAddress,location',
+        'X-Goog-FieldMask':
+          'id,displayName,formattedAddress,location,photos,priceLevel,primaryTypeDisplayName',
       },
     },
   );
@@ -87,5 +103,20 @@ export async function fetchPlaceDetails(
     address: json.formattedAddress ?? '',
     lat: json.location?.latitude ?? 0,
     lng: json.location?.longitude ?? 0,
+    photoName: json.photos?.[0]?.name ?? null,
+    costBracket: PRICE_LEVEL_BRACKETS[json.priceLevel] ?? null,
+    // Google's one human-readable category for the place (e.g. "Italian
+    // restaurant") — used as the place's sole food-type tag. `types` also
+    // exists on the API but only as raw, untranslated enum strings (plus
+    // generic noise like "point_of_interest"), so it's not usable as a label.
+    foodType: json.primaryTypeDisplayName?.text ?? null,
   };
+}
+
+// Builds a renderable image URL for a stored `google_photo_name` (the Places
+// API (New) photo *resource name*, e.g. "places/ChIJ.../photos/AeJ..."). The
+// API key is appended here, at read time, rather than being baked into the
+// stored column.
+export function getPlacePhotoUrl(photoName: string, maxWidthPx = 800): string {
+  return `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=${maxWidthPx}&key=${API_KEY}`;
 }

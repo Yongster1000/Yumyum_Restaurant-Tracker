@@ -16,6 +16,7 @@ export type Place = {
   lat: number;
   lng: number;
   cost_bracket: string | null;
+  google_photo_name: string | null;
   created_at: string;
 };
 

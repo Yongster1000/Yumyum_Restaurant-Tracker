@@ -1,4 +1,4 @@
-import { Text, type TextProps } from 'react-native';
+import { Platform, StyleSheet, Text, type TextProps, type TextStyle } from 'react-native';
 
 import { Fonts, ThemeColor } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -12,10 +12,20 @@ export type ThemedTextProps = TextProps & {
 
 export function ThemedText({ style, variant = 'body', color, ...rest }: ThemedTextProps) {
   const theme = useTheme();
+  const flatStyle = StyleSheet.flatten(style) as TextStyle | undefined;
+  const fontSize = flatStyle?.fontSize ?? 14;
 
   return (
     <Text
-      style={[{ color: theme[color ?? 'text'], fontFamily: Fonts[variant] }, style]}
+      style={[
+        { color: theme[color ?? 'text'], fontFamily: Fonts[variant] },
+        // Android derives line height from these custom (Google Fonts) TTFs'
+        // own metrics when none is set, which clips ascenders (capital
+        // letters, "l"/"h"/"k") — doesn't happen on iOS/web. Give it room
+        // unless the caller already specified a line height.
+        Platform.OS === 'android' && flatStyle?.lineHeight === undefined && { lineHeight: fontSize * 1.3 },
+        style,
+      ]}
       {...rest}
     />
   );

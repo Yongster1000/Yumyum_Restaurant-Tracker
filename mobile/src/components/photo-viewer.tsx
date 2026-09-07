@@ -30,8 +30,14 @@ function ZoomableImage({
   const translateY = useSharedValue(0);
   const savedTranslateX = useSharedValue(0);
   const savedTranslateY = useSharedValue(0);
+  // Mirrors `onZoomChange` locally so the pan gesture below can be disabled
+  // while unzoomed — a GestureDetector claims single-finger drags even when
+  // its handler internally no-ops, which was blocking the FlatList's own
+  // paging scroll from ever seeing the touch.
+  const [isZoomedLocal, setIsZoomedLocal] = useState(false);
 
   function reportZoomed(zoomed: boolean) {
+    setIsZoomedLocal(zoomed);
     onZoomChange(zoomed);
   }
 
@@ -53,6 +59,7 @@ function ZoomableImage({
     });
 
   const pan = Gesture.Pan()
+    .enabled(isZoomedLocal)
     .onUpdate((event) => {
       if (savedScale.value <= 1) return;
       translateX.value = savedTranslateX.value + event.translationX;

@@ -86,21 +86,24 @@ export function CircleButton({
   onPress,
   size = 44,
   backgroundColor = Colors.surface,
+  disabled,
   children,
   style,
 }: {
   onPress?: () => void;
   size?: number;
   backgroundColor?: string;
+  disabled?: boolean;
   children: ReactNode;
   style?: StyleProp<ViewStyle>;
 }) {
   return (
-    <Pressable onPress={onPress} style={style}>
+    <Pressable onPress={onPress} disabled={disabled} style={style}>
       <View
         style={[
           styles.circle,
           { width: size, height: size, borderRadius: size / 2, backgroundColor },
+          disabled && styles.disabled,
         ]}>
         {children}
       </View>

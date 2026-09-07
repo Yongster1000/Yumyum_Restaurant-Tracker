@@ -32,13 +32,22 @@ import {
 import { supabase } from '@/lib/supabase';
 import type { Entry } from '@/types/database';
 
-// TODO: food type multi-select chips (search-before-create against
-// `food_types`, writing to `place_food_types`) are not wired up yet.
-//
 // TODO: this only dedupes against existing `places` by google_place_id (an
 // exact match on the place the user picked from Google). The brief also
 // describes surfacing fuzzy-matched *existing saved places* alongside the
 // Google results while typing — not implemented yet.
+
+// Supabase's errors (PostgrestError, StorageError, etc.) are plain objects,
+// not real `Error` instances — `error instanceof Error` is false for them,
+// so a naive `String(error)` fallback prints "[object Object]" instead of
+// the actual message.
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+    return error.message;
+  }
+  return String(error);
+}
 
 type EntryFormProps = {
   mode: 'create' | 'edit';
@@ -62,6 +71,7 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
   const [comment, setComment] = useState(entry?.comment ?? '');
   const [photoUris, setPhotoUris] = useState<string[]>(entry?.photos ?? []);
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (mode !== 'create' || selectedPlace) return;
@@ -73,7 +83,7 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
         if (!cancelled) setSuggestions(results);
       } catch (error) {
         if (!cancelled) {
-          Alert.alert('Place search failed', error instanceof Error ? error.message : String(error));
+          Alert.alert('Place search failed', getErrorMessage(error));
         }
       } finally {
         if (!cancelled) setIsSearching(false);
@@ -92,7 +102,7 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
       setSelectedPlace(details);
       setSuggestions([]);
     } catch (error) {
-      Alert.alert('Could not load place details', error instanceof Error ? error.message : String(error));
+      Alert.alert('Could not load place details', getErrorMessage(error));
     } finally {
       setIsSearching(false);
     }
@@ -139,6 +149,37 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
     return uploadedUrls;
   }
 
+  // Food types are sourced solely from Google (no user-entered/edited tags)
+  // — one tag per place, taken from its Google category. Select-then-insert
+  // (mirroring the places dedup above) rather than upsert: `food_types` only
+  // has an insert RLS policy, no update policy, and upsert's ON CONFLICT
+  // path performs an UPDATE — which RLS then silently rejects on every use
+  // of a category after its first.
+  async function tagPlaceWithFoodType(placeId: string, foodTypeName: string) {
+    const { data: existingFoodType, error: foodTypeLookupError } = await supabase
+      .from('food_types')
+      .select('id')
+      .eq('name', foodTypeName)
+      .maybeSingle();
+    if (foodTypeLookupError) throw foodTypeLookupError;
+
+    let foodTypeId = existingFoodType?.id as string | undefined;
+    if (!foodTypeId) {
+      const { data: newFoodType, error: insertError } = await supabase
+        .from('food_types')
+        .insert({ name: foodTypeName })
+        .select('id')
+        .single();
+      if (insertError) throw insertError;
+      foodTypeId = newFoodType.id as string;
+    }
+
+    const { error: tagError } = await supabase
+      .from('place_food_types')
+      .insert({ place_id: placeId, food_type_id: foodTypeId });
+    if (tagError) throw tagError;
+  }
+
   async function handleSave() {
     if (!session) return;
     setIsSaving(true);
@@ -152,13 +193,39 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
         // already saved this exact Google place, instead of duplicating it.
         const { data: existingPlace, error: lookupError } = await supabase
           .from('places')
-          .select('id')
+          .select('id, google_photo_name, cost_bracket')
           .eq('google_place_id', selectedPlace.placeId)
           .maybeSingle();
         if (lookupError) throw lookupError;
 
         if (existingPlace) {
-          placeId = existingPlace.id;
+          placeId = existingPlace.id as string;
+
+          // Backfill any Google-sourced fields the existing row is still
+          // missing (it may predate this data being fetched at all, or
+          // Google may have had nothing to return the first time) — never
+          // overwrites a value that's already set.
+          const placeUpdate: { google_photo_name?: string; cost_bracket?: string } = {};
+          if (!existingPlace.google_photo_name && selectedPlace.photoName) {
+            placeUpdate.google_photo_name = selectedPlace.photoName;
+          }
+          if (!existingPlace.cost_bracket && selectedPlace.costBracket) {
+            placeUpdate.cost_bracket = selectedPlace.costBracket;
+          }
+          if (Object.keys(placeUpdate).length > 0) {
+            const { error: updateError } = await supabase.from('places').update(placeUpdate).eq('id', placeId);
+            if (updateError) throw updateError;
+          }
+
+          const { data: existingTag, error: tagLookupError } = await supabase
+            .from('place_food_types')
+            .select('place_id')
+            .eq('place_id', placeId)
+            .maybeSingle();
+          if (tagLookupError) throw tagLookupError;
+          if (!existingTag && selectedPlace.foodType) {
+            await tagPlaceWithFoodType(placeId, selectedPlace.foodType);
+          }
         } else {
           const { data: place, error: placeError } = await supabase
             .from('places')
@@ -168,11 +235,17 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
               address: selectedPlace.address,
               lat: selectedPlace.lat,
               lng: selectedPlace.lng,
+              google_photo_name: selectedPlace.photoName,
+              cost_bracket: selectedPlace.costBracket,
             })
             .select()
             .single();
           if (placeError) throw placeError;
-          placeId = place.id;
+          placeId = place.id as string;
+
+          if (selectedPlace.foodType) {
+            await tagPlaceWithFoodType(placeId, selectedPlace.foodType);
+          }
         }
       }
 
@@ -207,13 +280,49 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
       onSaved?.();
       router.back();
     } catch (error) {
-      Alert.alert('Could not save entry', error instanceof Error ? error.message : String(error));
+      Alert.alert('Could not save entry', getErrorMessage(error));
     } finally {
       setIsSaving(false);
     }
   }
 
-  const canSave = !isSaving && (mode === 'edit' || !!selectedPlace);
+  async function handleDelete() {
+    if (!session || !entry) return;
+    Alert.alert('Delete this entry?', 'This removes your visit, rating, comment, and photos for this place. This can\'t be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          setIsDeleting(true);
+          try {
+            const { data: files } = await supabase.storage
+              .from('entry-photos')
+              .list(`${session.user.id}/${entry.id}`);
+            if (files && files.length > 0) {
+              await supabase.storage
+                .from('entry-photos')
+                .remove(files.map((file) => `${session.user.id}/${entry.id}/${file.name}`));
+            }
+
+            const { error } = await supabase.from('entries').delete().eq('id', entry.id);
+            if (error) throw error;
+
+            onSaved?.();
+            // `back()` would only pop this modal, landing on the now-stale
+            // Place Detail screen underneath. Go all the way to My places —
+            // there's nothing left here worth seeing once your own entry is gone.
+            router.dismissTo('/(tabs)');
+          } catch (error) {
+            Alert.alert('Could not delete entry', getErrorMessage(error));
+            setIsDeleting(false);
+          }
+        },
+      },
+    ]);
+  }
+
+  const canSave = !isSaving && !isDeleting && (mode === 'edit' || !!selectedPlace);
 
   return (
     <ThemedView type="background" style={styles.flex}>
@@ -225,7 +334,7 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
           <ThemedText variant="heading" style={styles.headerTitle}>
             {mode === 'create' ? 'Add a place' : 'Edit entry'}
           </ThemedText>
-          <CircleButton size={36} onPress={() => router.back()}>
+          <CircleButton size={36} onPress={() => router.back()} disabled={isSaving || isDeleting}>
             <XIcon size={18} color={Colors.neutral700} />
           </CircleButton>
         </View>
@@ -365,8 +474,25 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
           <Button block onPress={handleSave} disabled={!canSave} style={styles.saveButton} textStyle={styles.saveButtonLabel}>
             {isSaving ? 'Saving…' : mode === 'create' ? 'Save this place' : 'Save changes'}
           </Button>
+
+          {mode === 'edit' && (
+            <Pressable onPress={handleDelete} disabled={isSaving || isDeleting} style={styles.deleteButton} hitSlop={8}>
+              <ThemedText variant="bodySemibold" style={styles.deleteButtonLabel}>
+                {isDeleting ? 'Deleting…' : 'Delete entry'}
+              </ThemedText>
+            </Pressable>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {isSaving && (
+        <View style={styles.savingOverlay}>
+          <ActivityIndicator size="large" color={Colors.background} />
+          <ThemedText variant="bodySemibold" color="background" style={styles.savingLabel}>
+            {photoUris.some((uri) => !uri.startsWith('https://')) ? 'Uploading photos…' : 'Saving…'}
+          </ThemedText>
+        </View>
+      )}
     </ThemedView>
   );
 }
@@ -524,6 +650,24 @@ const styles = StyleSheet.create({
   },
   saveButtonLabel: {
     fontSize: 18,
+  },
+  deleteButton: {
+    alignItems: 'center',
+    paddingVertical: Spacing.space3,
+  },
+  deleteButtonLabel: {
+    fontSize: 15,
+    color: '#b3392a',
+  },
+  savingOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(32, 30, 29, 0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.space3,
+  },
+  savingLabel: {
+    fontSize: 16,
   },
   toggleTrack: {
     width: 56,

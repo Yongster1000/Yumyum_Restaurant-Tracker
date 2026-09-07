@@ -1,16 +1,7 @@
 import { Image } from 'expo-image';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import {
-  FlatList,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  View,
-  useWindowDimensions,
-  type NativeSyntheticEvent,
-  type NativeScrollEvent,
-} from 'react-native';
+import { FlatList, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { Card } from '@/components/card';
 import { CircleButton } from '@/components/button';
@@ -21,6 +12,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors, Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
+import { getPlacePhotoUrl } from '@/lib/google-places';
 import { supabase } from '@/lib/supabase';
 import type { Entry, FoodType, Place, User } from '@/types/database';
 
@@ -30,11 +22,9 @@ export default function PlaceDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { session } = useAuth();
-  const { width } = useWindowDimensions();
   const [place, setPlace] = useState<Place | null>(null);
   const [foodTypes, setFoodTypes] = useState<FoodType[]>([]);
   const [entries, setEntries] = useState<EntryWithUser[]>([]);
-  const [activePhotoIndex, setActivePhotoIndex] = useState(0);
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
 
@@ -60,14 +50,10 @@ export default function PlaceDetailScreen() {
     }, [load]),
   );
 
-  // All photos across every user's entry for this place, so the hero at the
-  // top can be swiped through instead of only ever showing one.
+  // All food photos across every user's entry for this place, deduped, shown
+  // as their own scrollable row (separate from the restaurant's own Google
+  // photo used in the hero above).
   const photos = useMemo(() => Array.from(new Set(entries.flatMap((entry) => entry.photos))), [entries]);
-
-  function handleHeroScroll(event: NativeSyntheticEvent<NativeScrollEvent>) {
-    const index = Math.round(event.nativeEvent.contentOffset.x / width);
-    setActivePhotoIndex(index);
-  }
 
   if (!place) {
     return (
@@ -83,35 +69,11 @@ export default function PlaceDetailScreen() {
     <ThemedView type="background" style={styles.container}>
       <ScrollView>
         <View style={styles.hero}>
-          {photos.length > 0 ? (
-            <FlatList
-              data={photos}
-              keyExtractor={(uri) => uri}
-              horizontal
-              pagingEnabled
-              showsHorizontalScrollIndicator={false}
-              onMomentumScrollEnd={handleHeroScroll}
-              renderItem={({ item, index }) => (
-                <Pressable
-                  onPress={() => {
-                    setViewerIndex(index);
-                    setViewerVisible(true);
-                  }}>
-                  <Image source={{ uri: item }} style={[styles.heroImage, { width }]} />
-                </Pressable>
-              )}
-            />
+          {place.google_photo_name ? (
+            <Image source={{ uri: getPlacePhotoUrl(place.google_photo_name) }} style={styles.heroImage} />
           ) : (
             <View style={[styles.heroImage, styles.heroPlaceholder]}>
               <UtensilsIcon size={54} color={Colors.accent2700} />
-            </View>
-          )}
-
-          {photos.length > 1 && (
-            <View style={styles.dotsRow} pointerEvents="none">
-              {photos.map((_, index) => (
-                <View key={index} style={[styles.dot, index === activePhotoIndex && styles.dotActive]} />
-              ))}
             </View>
           )}
 
@@ -125,7 +87,7 @@ export default function PlaceDetailScreen() {
             {place.name}
           </ThemedText>
           <ThemedText variant="body" color="neutral700" style={styles.address}>
-            {place.address}
+            {place.cost_bracket ? `${place.address} · ${place.cost_bracket}` : place.address}
           </ThemedText>
 
           {foodTypes.length > 0 && (
@@ -135,6 +97,30 @@ export default function PlaceDetailScreen() {
                   {foodType.name}
                 </Tag>
               ))}
+            </View>
+          )}
+
+          {photos.length > 0 && (
+            <View style={styles.photosSection}>
+              <ThemedText variant="bodySemibold" color="neutral600" style={styles.photosKicker}>
+                Photos
+              </ThemedText>
+              <FlatList
+                data={photos}
+                keyExtractor={(uri) => uri}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.photoRow}
+                renderItem={({ item, index }) => (
+                  <Pressable
+                    onPress={() => {
+                      setViewerIndex(index);
+                      setViewerVisible(true);
+                    }}>
+                    <Image source={{ uri: item }} style={styles.photoThumb} />
+                  </Pressable>
+                )}
+              />
             </View>
           )}
 
@@ -223,25 +209,6 @@ const styles = StyleSheet.create({
     top: 16,
     left: Spacing.space4,
   },
-  dotsRow: {
-    position: 'absolute',
-    bottom: 14,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: 'rgba(255,255,255,0.5)',
-  },
-  dotActive: {
-    backgroundColor: '#fff',
-    width: 16,
-  },
   content: {
     padding: Spacing.space6,
     gap: Spacing.space3,
@@ -261,6 +228,23 @@ const styles = StyleSheet.create({
   tag: {
     paddingHorizontal: 14,
     paddingVertical: 6,
+  },
+  photosSection: {
+    marginTop: Spacing.space2,
+    gap: 8,
+  },
+  photosKicker: {
+    fontSize: 12,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  photoRow: {
+    gap: 10,
+  },
+  photoThumb: {
+    width: 84,
+    height: 84,
+    borderRadius: 24,
   },
   reviewsTitle: {
     fontSize: 20,
