@@ -26,3 +26,20 @@ yumyums_project_brief.md
    native-build-only).
 3. Follow [`mobile/README.md`](mobile/README.md) to install dependencies and
    run the app.
+
+## Branching & environments
+
+- `Development` is where day-to-day work happens — commit and push here.
+- `main` is production. It's updated by opening a PR from `Development` into
+  `main`; merging is treated as a release. This is a convention, not an
+  enforced branch-protection rule.
+- Expo/EAS build profiles (`mobile/eas.json`) mirror the same split:
+  - `development` — dev-client build (`expo-dev-client`), internal
+    distribution, `development` update channel.
+  - `preview` — internal APK builds on the `preview` channel, for sharing ad
+    hoc test builds.
+  - `production` — the store-bound build, on the `production` channel.
+- All three profiles share the same Supabase project and app identity
+  (bundle ID, name, icon) — there's no separate dev backend or app variant.
+  EAS Update channels are what keep dev/preview/production OTA updates from
+  crossing into each other.

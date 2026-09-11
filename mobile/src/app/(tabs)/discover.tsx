@@ -1,3 +1,4 @@
+import { Image } from 'expo-image';
 import { Link, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { Alert, FlatList, InteractionManager, Pressable, StyleSheet, View } from 'react-native';
@@ -5,25 +6,28 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { Button } from '@/components/button';
 import { Card } from '@/components/card';
-import { PlusIcon, StarIcon, UtensilsIcon } from '@/components/icons';
+import { CheckIcon, PlusIcon, StarIcon, UtensilsIcon } from '@/components/icons';
 import { SearchBar } from '@/components/search-bar';
 import { Tag } from '@/components/tag';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { BottomTabInset, Colors, Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
+import { getPlacePhotoUrl } from '@/lib/google-places';
 import { supabase } from '@/lib/supabase';
 import type { Entry, EntryItem, Place, User } from '@/types/database';
 
 type DiscoverEntry = Entry & { place: Place; user: User; entry_items: Pick<EntryItem, 'id'>[] };
 
-// Rotates avatar background/text colors across three of the design's
-// accent ramps so a list of different users doesn't read as monochrome.
-const AVATAR_STYLES = [
-  { background: Colors.accent2300, color: Colors.accent2800 },
-  { background: Colors.accent300, color: Colors.accent800 },
-  { background: Colors.neutral300, color: Colors.neutral800 },
-] as const;
+// One card per place, not per save — otherwise the same restaurant shows up
+// once per person who's added it. `otherEntries` excludes the viewer's own
+// entry (if any); a group only exists when at least one *other* user has
+// saved the place, matching the "From your people" framing of this screen.
+type DiscoverPlaceGroup = {
+  place: Place;
+  otherEntries: DiscoverEntry[];
+  viewerHasSaved: boolean;
+};
 
 export default function DiscoverScreen() {
   const { session } = useAuth();
@@ -38,10 +42,12 @@ export default function DiscoverScreen() {
     setIsLoading(true);
     setHasError(false);
     try {
+      // No .neq('user_id', ...) filter here (unlike before) — we need the
+      // viewer's own entries too, to know which place-groups they've already
+      // saved. Grouping and viewer-only filtering happens in `groups` below.
       const { data, error } = await supabase
         .from('entries')
         .select('*, place:places(*), user:users(*), entry_items(id)')
-        .neq('user_id', session.user.id)
         .order('updated_at', { ascending: false });
       if (error) throw error;
       setEntries((data ?? []) as DiscoverEntry[]);
@@ -65,25 +71,45 @@ export default function DiscoverScreen() {
     }, [loadEntries]),
   );
 
-  const filteredEntries = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    if (!normalizedQuery) return entries;
-    return entries.filter(
-      (entry) =>
-        entry.place.name.toLowerCase().includes(normalizedQuery) ||
-        entry.user.display_name.toLowerCase().includes(normalizedQuery),
-    );
-  }, [entries, query]);
+  const groups = useMemo(() => {
+    // `entries` is already ordered by updated_at desc, and a Map keeps
+    // insertion order, so groups come out ordered by whichever place saw
+    // the most recent activity (by anyone) first — same feel as before.
+    const byPlace = new Map<string, DiscoverEntry[]>();
+    for (const entry of entries) {
+      const list = byPlace.get(entry.place_id);
+      if (list) list.push(entry);
+      else byPlace.set(entry.place_id, [entry]);
+    }
+    const result: DiscoverPlaceGroup[] = [];
+    for (const list of byPlace.values()) {
+      const otherEntries = list.filter((entry) => entry.user_id !== session?.user.id);
+      if (otherEntries.length === 0) continue;
+      result.push({ place: list[0].place, otherEntries, viewerHasSaved: otherEntries.length !== list.length });
+    }
+    return result;
+  }, [entries, session]);
 
-  async function addToOwnList(entry: DiscoverEntry) {
+  const filteredGroups = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return groups;
+    return groups.filter(
+      (group) =>
+        group.place.name.toLowerCase().includes(normalizedQuery) ||
+        group.otherEntries.some((entry) => entry.user.display_name.toLowerCase().includes(normalizedQuery)),
+    );
+  }, [groups, query]);
+
+  async function addToOwnList(group: DiscoverPlaceGroup) {
     if (!session) return;
     const { error } = await supabase
       .from('entries')
-      .insert({ user_id: session.user.id, place_id: entry.place_id, visited: false });
+      .insert({ user_id: session.user.id, place_id: group.place.id, visited: false });
     if (error) {
       Alert.alert('Could not add place', error.message);
     } else {
-      Alert.alert('Added', `${entry.place.name} was added to your list.`);
+      Alert.alert('Added', `${group.place.name} was added to your list.`);
+      loadEntries();
     }
   }
 
@@ -119,8 +145,8 @@ export default function DiscoverScreen() {
           </View>
         ) : (
         <FlatList
-          data={filteredEntries}
-          keyExtractor={(entry) => entry.id}
+          data={filteredGroups}
+          keyExtractor={(group) => group.place.id}
           // See the matching comment in (tabs)/index.tsx: add the device's own
           // bottom inset on top of the tab-bar clearance so Android's
           // 3-button/gesture nav doesn't cover the last entry.
@@ -130,34 +156,44 @@ export default function DiscoverScreen() {
           ListEmptyComponent={
             !isLoading ? (
               <ThemedText variant="body" color="neutral700">
-                {entries.length === 0 ? 'No entries from other users yet.' : 'No places match your search.'}
+                {groups.length === 0 ? 'No entries from other users yet.' : 'No places match your search.'}
               </ThemedText>
             ) : null
           }
-          renderItem={({ item, index }) => {
-            const avatarStyle = AVATAR_STYLES[index % AVATAR_STYLES.length];
+          renderItem={({ item: group }) => {
+            // Most-recently-updated other saver drives the rating/dish
+            // display — same per-entry detail the card showed before, just
+            // picked from the group instead of being the only entry.
+            const primary = group.otherEntries[0];
+            const savedByLabel =
+              group.otherEntries.length > 1
+                ? `saved by ${primary.user.display_name} +${group.otherEntries.length - 1} more`
+                : `saved by ${primary.user.display_name}`;
+            const photoUri = group.place.google_photo_name ? getPlacePhotoUrl(group.place.google_photo_name) : null;
             return (
               <Card style={styles.entryCard}>
-                <Link href={{ pathname: '/place/[id]', params: { id: item.place_id } }} asChild>
+                <Link href={{ pathname: '/place/[id]', params: { id: group.place.id } }} asChild>
                   <Pressable style={styles.entryInfo}>
-                    <View style={[styles.avatar, { backgroundColor: avatarStyle.background }]}>
-                      <ThemedText variant="heading" style={[styles.avatarLabel, { color: avatarStyle.color }]}>
-                        {item.user.display_name.charAt(0).toUpperCase()}
-                      </ThemedText>
-                    </View>
+                    {photoUri ? (
+                      <Image source={{ uri: photoUri }} style={styles.avatar} />
+                    ) : (
+                      <View style={[styles.avatar, styles.avatarPlaceholder]}>
+                        <UtensilsIcon size={20} color={Colors.accent2700} />
+                      </View>
+                    )}
                     <View style={styles.entryText}>
                       <ThemedText variant="heading" style={styles.entryName}>
-                        {item.place.name}
+                        {group.place.name}
                       </ThemedText>
                       <ThemedText variant="body" color="neutral600" style={styles.savedBy}>
-                        saved by {item.user.display_name}
+                        {savedByLabel}
                       </ThemedText>
                       <View style={styles.metaRow}>
-                        {item.visited ? (
+                        {primary.visited ? (
                           <View style={styles.ratingRow}>
                             <StarIcon size={15} active color={Colors.accent} />
                             <ThemedText variant="bodyBold" color="accent700" style={styles.ratingText}>
-                              {(item.rating ?? 0).toFixed(1)}
+                              {(primary.rating ?? 0).toFixed(1)}
                             </ThemedText>
                           </View>
                         ) : (
@@ -165,11 +201,11 @@ export default function DiscoverScreen() {
                             Want to try
                           </Tag>
                         )}
-                        {item.entry_items.length > 0 && (
+                        {primary.entry_items.length > 0 && (
                           <View style={styles.dishIndicator}>
                             <UtensilsIcon size={12} color={Colors.neutral600} />
                             <ThemedText variant="bodyMedium" color="neutral600" style={styles.dishIndicatorLabel}>
-                              {item.entry_items.length}
+                              {primary.entry_items.length}
                             </ThemedText>
                           </View>
                         )}
@@ -177,8 +213,16 @@ export default function DiscoverScreen() {
                     </View>
                   </Pressable>
                 </Link>
-                <Button variant="icon" onPress={() => addToOwnList(item)} style={styles.addButton}>
-                  <PlusIcon size={18} color={Colors.accent} />
+                <Button
+                  variant="icon"
+                  disabled={group.viewerHasSaved}
+                  onPress={() => addToOwnList(group)}
+                  style={[styles.addButton, group.viewerHasSaved && styles.addedButton]}>
+                  {group.viewerHasSaved ? (
+                    <CheckIcon size={18} color={Colors.neutral600} />
+                  ) : (
+                    <PlusIcon size={18} color={Colors.accent} />
+                  )}
                 </Button>
               </Card>
             );
@@ -260,8 +304,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarLabel: {
-    fontSize: 20,
+  avatarPlaceholder: {
+    backgroundColor: Colors.accent2200,
   },
   entryText: {
     flex: 1,
@@ -303,5 +347,8 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     borderWidth: 1.5,
     borderColor: Colors.accent,
+  },
+  addedButton: {
+    borderColor: Colors.neutral400,
   },
 });
