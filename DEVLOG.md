@@ -550,3 +550,51 @@ so on-device testing happens against the live preview build. `supabase/
 migrations/0004`-`0006` and several `mobile/` files are still uncommitted in
 git as of this entry (session's work applied directly to the live DB/EAS
 branch ahead of a commit) — worth committing once confirmed good on-device.
+
+## 2026-09-11 (continued) — Discover place-level grouping + dev/prod split
+
+### Discover showed a duplicate card per save, not per place
+
+**Symptom**: Discover queried `entries` directly with no grouping, so a place
+saved by 3 different users rendered as 3 separate cards. There was also no
+way to tell from Discover whether you'd already added a place to your own My
+Places — the "+" button was always active, and tapping it again just failed
+on the `entries` `unique(user_id, place_id)` constraint.
+
+**Fix** (`mobile/src/app/(tabs)/discover.tsx`): the query no longer excludes
+the viewer's own entries (`.neq('user_id', ...)` removed) — it needs them to
+know what the viewer has already saved. A new `groups` `useMemo` buckets all
+fetched entries by `place_id`, computes `otherEntries` (everyone but the
+viewer) and `viewerHasSaved`, and drops any place where `otherEntries` is
+empty (nothing to "discover" if only the viewer saved it — matches the
+screen's "From your people" framing). The FlatList now renders one card per
+place instead of one per entry, labeled "saved by X" / "saved by X +N more".
+The add button swaps to a disabled `CheckIcon` when `viewerHasSaved` is true,
+and `addToOwnList` now refetches after a successful insert so the button
+flips state immediately instead of needing a manual pull-to-refresh.
+
+Also swapped the card's icon from a rotating per-reviewer letter avatar
+(`AVATAR_STYLES`, removed — no longer meaningful once a card represents a
+place instead of one specific save) to the place's own Google photo via the
+existing `getPlacePhotoUrl(place.google_photo_name)` helper, matching how My
+Places and Place Detail already render place photos — falls back to a
+utensils-icon placeholder when a place has no photo, same as My Places.
+
+**Testing**: `tsc --noEmit` and `expo lint` clean. Live-tested in Expo Go by
+the user directly — confirmed working.
+
+### Development vs. production split (Git + EAS)
+
+Documented (not enforced — deliberate choice) a branching convention:
+`Development` is the working branch, `main` is production and is only
+updated by merging a PR from `Development` (see the README's "Branching &
+environments" section, and the "Branching & releases" section added to
+`CLAUDE.md` so agents don't push to `main` directly). Also added this
+DEVLOG-on-`main`-work reminder to `CLAUDE.md` itself.
+
+Added `development` and `production` build profiles to `mobile/eas.json`
+alongside the existing `preview` one, each on their own EAS Update channel,
+all three still pointing at the same Supabase project and app identity (no
+separate dev backend or bundle ID — kept deliberately simple). Installed
+`expo-dev-client`, required for the new `development` profile's dev-client
+build.
