@@ -55,6 +55,18 @@ const config: ExpoConfig = {
     typedRoutes: true,
     reactCompiler: true,
   },
+  owner: 'yongster1000',
+  runtimeVersion: {
+    policy: 'appVersion',
+  },
+  updates: {
+    url: 'https://u.expo.dev/765ba74b-e204-426f-924d-c09cf8517b51',
+  },
+  extra: {
+    eas: {
+      projectId: '765ba74b-e204-426f-924d-c09cf8517b51',
+    },
+  },
 };
 
 export default config;

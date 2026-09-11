@@ -14,6 +14,8 @@ import { useEffect } from 'react';
 
 import { Colors } from '@/constants/theme';
 import { AuthProvider, useAuth } from '@/lib/auth-context';
+import { ErrorBoundary } from '@/components/error-boundary';
+import { ToastProvider } from '@/components/toast';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -46,6 +48,7 @@ function RootNavigator() {
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(auth)" />
+      <Stack.Screen name="auth-confirm" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="place/[id]" />
       <Stack.Screen name="entry/new" options={{ presentation: 'modal' }} />
@@ -68,11 +71,15 @@ export default function RootLayout() {
   }
 
   return (
-    <ThemeProvider value={NavigationTheme}>
-      <StatusBar style="dark" />
-      <AuthProvider>
-        <RootNavigator />
-      </AuthProvider>
-    </ThemeProvider>
+    <ErrorBoundary>
+      <ThemeProvider value={NavigationTheme}>
+        <StatusBar style="dark" />
+        <AuthProvider>
+          <ToastProvider>
+            <RootNavigator />
+          </ToastProvider>
+        </AuthProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }

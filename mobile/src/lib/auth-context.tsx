@@ -15,10 +15,22 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setIsLoading(false);
-    });
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        setSession(data.session);
+      })
+      .catch((error) => {
+        // A failed initial fetch (cold-start network blip, AsyncStorage
+        // read failure, etc.) shouldn't strand the app on the loading
+        // screen forever — fall back to signed-out so routing sends the
+        // user to the auth screen, where signing in retries this.
+        console.error('Failed to fetch initial session', error);
+        setSession(null);
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
 
     const { data: subscription } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);

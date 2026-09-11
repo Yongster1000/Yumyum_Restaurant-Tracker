@@ -1,12 +1,13 @@
 import { Image } from 'expo-image';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { FlatList, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { FlatList, InteractionManager, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { Card } from '@/components/card';
-import { CircleButton } from '@/components/button';
+import { Button, CircleButton } from '@/components/button';
 import { ChevronLeftIcon, PencilIcon, StarIcon, UtensilsIcon } from '@/components/icons';
 import { PhotoViewer } from '@/components/photo-viewer';
+import { StarRating } from '@/components/star-rating';
 import { Tag } from '@/components/tag';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -14,9 +15,15 @@ import { Colors, Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { getPlacePhotoUrl } from '@/lib/google-places';
 import { supabase } from '@/lib/supabase';
-import type { Entry, FoodType, Place, User } from '@/types/database';
+import type { Entry, EntryItem, FoodType, Place, User } from '@/types/database';
 
-type EntryWithUser = Entry & { user: User };
+type EntryWithUser = Entry & { user: User; entry_items: EntryItem[] };
+
+// e.g. 5 -> "5", 3.5 -> "3.5" — matches the mockup's compact right-aligned
+// per-dish rating (no trailing ".0" for whole numbers).
+function formatRating(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
 
 export default function PlaceDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -25,28 +32,51 @@ export default function PlaceDetailScreen() {
   const [place, setPlace] = useState<Place | null>(null);
   const [foodTypes, setFoodTypes] = useState<FoodType[]>([]);
   const [entries, setEntries] = useState<EntryWithUser[]>([]);
+  const [hasError, setHasError] = useState(false);
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
+  // Which photo set the viewer is paging through — the place's whole photo
+  // pool when opened from the top "Photos" row, or a single dish's `photos`
+  // when opened from a dish's own thumbnail row.
+  const [viewerPhotos, setViewerPhotos] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     if (!id) return;
+    setHasError(false);
 
-    const [placeResult, foodTypeResult, entriesResult] = await Promise.all([
-      supabase.from('places').select('*').eq('id', id).single(),
-      supabase.from('place_food_types').select('food_type:food_types(*)').eq('place_id', id),
-      supabase.from('entries').select('*, user:users(*)').eq('place_id', id),
-    ]);
+    try {
+      const [placeResult, foodTypeResult, entriesResult] = await Promise.all([
+        supabase.from('places').select('*').eq('id', id).single(),
+        supabase.from('place_food_types').select('food_type:food_types(*)').eq('place_id', id),
+        supabase
+          .from('entries')
+          .select('*, user:users(*), entry_items(*)')
+          .eq('place_id', id)
+          .order('position', { foreignTable: 'entry_items' }),
+      ]);
 
-    if (placeResult.data) setPlace(placeResult.data);
-    if (foodTypeResult.data) {
+      if (placeResult.error) throw placeResult.error;
+      if (foodTypeResult.error) throw foodTypeResult.error;
+      if (entriesResult.error) throw entriesResult.error;
+
+      setPlace(placeResult.data);
       setFoodTypes(foodTypeResult.data.map((row) => row.food_type as unknown as FoodType));
+      setEntries(entriesResult.data as EntryWithUser[]);
+    } catch (error) {
+      console.error('Failed to load place', error);
+      setHasError(true);
     }
-    if (entriesResult.data) setEntries(entriesResult.data as EntryWithUser[]);
   }, [id]);
 
+  // Deferred via InteractionManager — see the matching comment in
+  // (tabs)/index.tsx: refetching immediately on focus can race a still-
+  // animating modal-dismiss transition and crash Fabric's SvgView mounting.
   useFocusEffect(
     useCallback(() => {
-      load();
+      const task = InteractionManager.runAfterInteractions(() => {
+        load();
+      });
+      return () => task.cancel();
     }, [load]),
   );
 
@@ -54,6 +84,19 @@ export default function PlaceDetailScreen() {
   // as their own scrollable row (separate from the restaurant's own Google
   // photo used in the hero above).
   const photos = useMemo(() => Array.from(new Set(entries.flatMap((entry) => entry.photos))), [entries]);
+
+  if (hasError) {
+    return (
+      <ThemedView type="background" style={styles.loadingContainer}>
+        <ThemedText variant="body" color="neutral700" style={styles.errorText}>
+          Couldn&apos;t load this place. Check your connection and try again.
+        </ThemedText>
+        <Button variant="primary" onPress={load}>
+          Try again
+        </Button>
+      </ThemedView>
+    );
+  }
 
   if (!place) {
     return (
@@ -114,6 +157,7 @@ export default function PlaceDetailScreen() {
                 renderItem={({ item, index }) => (
                   <Pressable
                     onPress={() => {
+                      setViewerPhotos(photos);
                       setViewerIndex(index);
                       setViewerVisible(true);
                     }}>
@@ -141,11 +185,7 @@ export default function PlaceDetailScreen() {
                     {entry.user.display_name}
                   </ThemedText>
                   {entry.visited && (
-                    <View style={styles.starRow}>
-                      {[1, 2, 3, 4, 5].map((value) => (
-                        <StarIcon key={value} size={14} active={value <= (entry.rating ?? 0)} color={Colors.accent} />
-                      ))}
-                    </View>
+                    <StarRating value={entry.rating ?? 0} readOnly size={14} gap={2} color={Colors.accent} />
                   )}
                   {entry.user_id === session?.user.id && (
                     <CircleButton
@@ -163,6 +203,59 @@ export default function PlaceDetailScreen() {
                 ) : !entry.visited ? (
                   <Tag variant="outline">Want to try</Tag>
                 ) : null}
+
+                {entry.entry_items.length > 0 && (
+                  <>
+                    <View style={styles.dishDivider} />
+                    <View style={styles.dishSectionHeader}>
+                      <UtensilsIcon size={13} color={Colors.neutral600} />
+                      <ThemedText variant="bodySemibold" color="neutral600" style={styles.dishSectionLabel}>
+                        {entry.entry_items.length} {entry.entry_items.length === 1 ? 'dish' : 'dishes'}
+                      </ThemedText>
+                    </View>
+                    <View style={styles.dishItemList}>
+                      {entry.entry_items.map((dish) => (
+                        <View key={dish.id} style={styles.dishItemBlock}>
+                          <View style={styles.dishItemRow}>
+                            <View style={styles.dishItemText}>
+                              <ThemedText variant="bodyBold" style={styles.dishItemName}>
+                                {dish.name}
+                              </ThemedText>
+                              {dish.note && (
+                                <ThemedText variant="body" color="neutral600" style={styles.dishItemNote}>
+                                  {dish.note}
+                                </ThemedText>
+                              )}
+                            </View>
+                            {dish.rating != null && (
+                              <View style={styles.dishItemRating}>
+                                <StarIcon size={13} active color={Colors.accent700} />
+                                <ThemedText variant="bodyBold" color="accent700" style={styles.dishItemRatingLabel}>
+                                  {formatRating(dish.rating)}
+                                </ThemedText>
+                              </View>
+                            )}
+                          </View>
+                          {dish.photos.length > 0 && (
+                            <View style={styles.dishPhotoRow}>
+                              {dish.photos.map((uri, photoIndex) => (
+                                <Pressable
+                                  key={uri}
+                                  onPress={() => {
+                                    setViewerPhotos(dish.photos);
+                                    setViewerIndex(photoIndex);
+                                    setViewerVisible(true);
+                                  }}>
+                                  <Image source={{ uri }} style={styles.dishPhotoThumb} />
+                                </Pressable>
+                              ))}
+                            </View>
+                          )}
+                        </View>
+                      ))}
+                    </View>
+                  </>
+                )}
               </Card>
             ))}
           </View>
@@ -170,7 +263,7 @@ export default function PlaceDetailScreen() {
       </ScrollView>
 
       <PhotoViewer
-        photos={photos}
+        photos={viewerPhotos}
         initialIndex={viewerIndex}
         visible={viewerVisible}
         onClose={() => setViewerVisible(false)}
@@ -187,6 +280,11 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: Spacing.space3,
+    paddingHorizontal: Spacing.space6,
+  },
+  errorText: {
+    textAlign: 'center',
   },
   hero: {
     height: 280,
@@ -276,12 +374,65 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 15,
   },
-  starRow: {
-    flexDirection: 'row',
-    gap: 2,
-  },
   reviewComment: {
     fontSize: 15,
     lineHeight: 22,
+  },
+  dishDivider: {
+    height: 1,
+    backgroundColor: Colors.divider,
+    marginVertical: 2,
+  },
+  dishSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dishSectionLabel: {
+    fontSize: 11,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  dishItemList: {
+    gap: 8,
+  },
+  dishItemBlock: {
+    gap: 6,
+  },
+  dishItemRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: Spacing.space2,
+  },
+  dishPhotoRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  dishPhotoThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+  },
+  dishItemText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  dishItemName: {
+    fontSize: 14,
+  },
+  dishItemNote: {
+    fontSize: 13,
+  },
+  dishItemRating: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    flexShrink: 0,
+  },
+  dishItemRatingLabel: {
+    fontSize: 13,
   },
 });

@@ -1,4 +1,5 @@
-import { Link } from 'expo-router';
+import * as Linking from 'expo-linking';
+import { Link, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
@@ -6,10 +7,13 @@ import { Button } from '@/components/button';
 import { UtensilsIcon } from '@/components/icons';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { useToast } from '@/components/toast';
 import { Colors, Radius, Shadows, Spacing } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 
 export default function SignUpScreen() {
+  const router = useRouter();
+  const { showToast } = useToast();
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -21,15 +25,33 @@ export default function SignUpScreen() {
     setIsSubmitting(true);
     // `display_name` lands in raw_user_meta_data, which the handle_new_user
     // trigger (see supabase/migrations) copies into public.users on insert.
+    // emailRedirectTo points the confirmation link back into this app (via
+    // its `yumyums://` scheme, see app.config.ts) instead of Supabase's
+    // localhost:3000 default. Paired with `flowType: 'pkce'` on the client,
+    // the link carries a `?code=...` param that auth-confirm.tsx exchanges
+    // for a session.
     const { error: signUpError } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { display_name: displayName } },
+      options: {
+        data: { display_name: displayName },
+        emailRedirectTo: Linking.createURL('auth-confirm'),
+      },
     });
     setIsSubmitting(false);
     if (signUpError) {
       setError(signUpError.message);
+      return;
     }
+
+    // Don't rely solely on onAuthStateChange redirecting once a session
+    // lands — if the Supabase project requires email confirmation,
+    // `signUp` succeeds with `data.session` still null and nothing would
+    // otherwise happen. Always navigate to sign-in explicitly; if a session
+    // *did* come back immediately, (auth)/_layout.tsx will redirect further
+    // to (tabs) on its own once `session` is truthy.
+    showToast('Account created — sign in to get started');
+    router.replace('/(auth)/sign-in');
   }
 
   return (

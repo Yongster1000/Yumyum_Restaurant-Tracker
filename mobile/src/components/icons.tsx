@@ -1,5 +1,5 @@
-import { Children, cloneElement, isValidElement, type ReactNode } from 'react';
-import Svg, { Circle, Path, Polygon } from 'react-native-svg';
+import { Children, cloneElement, isValidElement, useId, type ReactNode } from 'react';
+import Svg, { Circle, ClipPath, Defs, Path, Polygon, Rect } from 'react-native-svg';
 
 // Lucide-style line icons (24x24 viewBox, 2.75 stroke) matching the icon set
 // used throughout the redesign. `Compass` substitutes for a custom tab-bar
@@ -98,6 +98,24 @@ export function PencilIcon(props: IconProps) {
   );
 }
 
+export function CheckIcon(props: IconProps) {
+  return (
+    <LineIcon {...props}>
+      <Path d="M20 6 9 17l-5-5" />
+    </LineIcon>
+  );
+}
+
+export function LogOutIcon(props: IconProps) {
+  return (
+    <LineIcon {...props}>
+      <Path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <Path d="M16 17 21 12 16 7" />
+      <Path d="M21 12H9" />
+    </LineIcon>
+  );
+}
+
 export function CompassIcon(props: IconProps) {
   const { size = 24, color = '#201e1d', strokeWidth = 2.75 } = props;
   return (
@@ -114,26 +132,57 @@ export function CompassIcon(props: IconProps) {
   );
 }
 
-/** Filled when `active`, outlined neutral when not — used for the 5-star rating row. */
+/**
+ * Filled when `active` (or when `fraction` >= 1), outlined neutral when not.
+ * `fraction` (0-1) takes priority over `active` and supports a half-filled
+ * star — used both for the plain 5-star rating row and, via a fractional
+ * value, half-star ratings (entry rating + per-dish ratings).
+ */
 export function StarIcon({
   size = 24,
   active = false,
+  fraction,
   color = '#c67139',
   inactiveColor = '#c0b6a5',
 }: {
   size?: number;
   active?: boolean;
+  fraction?: number;
   color?: string;
   inactiveColor?: string;
 }) {
   const d = 'M11.5 2.5l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3 8.7l5.9-.8z';
+  const clamped = Math.max(0, Math.min(1, fraction ?? (active ? 1 : 0)));
+  // clipPath ids share a single namespace per-document on web, so a plain
+  // literal id would clip every half-filled star in a list to whichever one
+  // rendered its <ClipPath> last — useId keeps each instance unique.
+  const clipId = `star-clip-${useId()}`;
+
+  if (clamped <= 0) {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <Path d={d} fill="none" stroke={inactiveColor} strokeWidth={2} />
+      </Svg>
+    );
+  }
+
+  if (clamped >= 1) {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <Path d={d} fill={color} stroke={color} strokeWidth={2.75} strokeLinejoin="round" />
+      </Svg>
+    );
+  }
+
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-      {active ? (
-        <Path d={d} fill={color} stroke={color} strokeWidth={2.75} strokeLinejoin="round" />
-      ) : (
-        <Path d={d} fill="none" stroke={inactiveColor} strokeWidth={2} />
-      )}
+      <Path d={d} fill="none" stroke={inactiveColor} strokeWidth={2} />
+      <Defs>
+        <ClipPath id={clipId}>
+          <Rect x={0} y={0} width={24 * clamped} height={24} />
+        </ClipPath>
+      </Defs>
+      <Path d={d} fill={color} stroke={color} strokeWidth={2.75} strokeLinejoin="round" clipPath={`url(#${clipId})`} />
     </Svg>
   );
 }

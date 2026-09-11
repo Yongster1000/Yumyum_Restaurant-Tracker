@@ -1,13 +1,11 @@
 import { Link, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Alert, FlatList, InteractionManager, Pressable, StyleSheet, View } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Button } from '@/components/button';
 import { Card } from '@/components/card';
-import { Chip } from '@/components/chip';
-import { FloatingTabBar } from '@/components/floating-tab-bar';
-import { PlusIcon, StarIcon } from '@/components/icons';
+import { PlusIcon, StarIcon, UtensilsIcon } from '@/components/icons';
 import { SearchBar } from '@/components/search-bar';
 import { Tag } from '@/components/tag';
 import { ThemedText } from '@/components/themed-text';
@@ -15,11 +13,9 @@ import { ThemedView } from '@/components/themed-view';
 import { BottomTabInset, Colors, Spacing } from '@/constants/theme';
 import { useAuth } from '@/lib/auth-context';
 import { supabase } from '@/lib/supabase';
-import type { Entry, Place, User } from '@/types/database';
+import type { Entry, EntryItem, Place, User } from '@/types/database';
 
-type DiscoverEntry = Entry & { place: Place; user: User };
-
-const EVERYONE_FILTER = 'everyone';
+type DiscoverEntry = Entry & { place: Place; user: User; entry_items: Pick<EntryItem, 'id'>[] };
 
 // Rotates avatar background/text colors across three of the design's
 // accent ramps so a list of different users doesn't read as monochrome.
@@ -31,50 +27,53 @@ const AVATAR_STYLES = [
 
 export default function DiscoverScreen() {
   const { session } = useAuth();
+  const insets = useSafeAreaInsets();
   const [entries, setEntries] = useState<DiscoverEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
   const [query, setQuery] = useState('');
-  const [activeUserId, setActiveUserId] = useState(EVERYONE_FILTER);
 
   const loadEntries = useCallback(async () => {
     if (!session) return;
     setIsLoading(true);
-    const { data, error } = await supabase
-      .from('entries')
-      .select('*, place:places(*), user:users(*)')
-      .neq('user_id', session.user.id)
-      .order('updated_at', { ascending: false });
-    if (!error && data) {
-      setEntries(data as DiscoverEntry[]);
+    setHasError(false);
+    try {
+      const { data, error } = await supabase
+        .from('entries')
+        .select('*, place:places(*), user:users(*), entry_items(id)')
+        .neq('user_id', session.user.id)
+        .order('updated_at', { ascending: false });
+      if (error) throw error;
+      setEntries((data ?? []) as DiscoverEntry[]);
+    } catch (error) {
+      console.error('Failed to load discover entries', error);
+      setHasError(true);
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   }, [session]);
 
+  // Deferred via InteractionManager — see the matching comment in
+  // (tabs)/index.tsx: refetching immediately on focus can race a still-
+  // animating modal-dismiss transition and crash Fabric's SvgView mounting.
   useFocusEffect(
     useCallback(() => {
-      loadEntries();
+      const task = InteractionManager.runAfterInteractions(() => {
+        loadEntries();
+      });
+      return () => task.cancel();
     }, [loadEntries]),
   );
 
-  const userFilters = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const entry of entries) {
-      seen.set(entry.user.id, entry.user.display_name);
-    }
-    return Array.from(seen, ([id, displayName]) => ({ id, displayName }));
-  }, [entries]);
-
   const filteredEntries = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    return entries.filter((entry) => {
-      const matchesQuery =
-        !normalizedQuery ||
+    if (!normalizedQuery) return entries;
+    return entries.filter(
+      (entry) =>
         entry.place.name.toLowerCase().includes(normalizedQuery) ||
-        entry.user.display_name.toLowerCase().includes(normalizedQuery);
-      const matchesUser = activeUserId === EVERYONE_FILTER || entry.user.id === activeUserId;
-      return matchesQuery && matchesUser;
-    });
-  }, [entries, query, activeUserId]);
+        entry.user.display_name.toLowerCase().includes(normalizedQuery),
+    );
+  }, [entries, query]);
 
   async function addToOwnList(entry: DiscoverEntry) {
     if (!session) return;
@@ -100,32 +99,38 @@ export default function DiscoverScreen() {
           </ThemedText>
         </View>
 
-        <View style={styles.searchRow}>
-          <SearchBar value={query} onChangeText={setQuery} placeholder="Search by user or place" />
-        </View>
+        {!(hasError && !isLoading) && (
+          <View style={styles.searchRow}>
+            <SearchBar value={query} onChangeText={setQuery} placeholder="Search by user or place" />
+          </View>
+        )}
 
-        <FlatList
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          data={[{ id: EVERYONE_FILTER, displayName: 'Everyone' }, ...userFilters]}
-          keyExtractor={(user) => user.id}
-          contentContainerStyle={styles.chipRow}
-          style={styles.chipList}
-          renderItem={({ item: user }) => (
-            <Chip label={user.displayName} selected={user.id === activeUserId} onPress={() => setActiveUserId(user.id)} />
-          )}
-        />
-
+        {hasError && !isLoading ? (
+          <View style={styles.errorState}>
+            <ThemedText variant="heading" style={styles.errorTitle}>
+              Couldn&apos;t load Discover
+            </ThemedText>
+            <ThemedText variant="body" color="neutral700" style={styles.errorBody}>
+              Something went wrong fetching this list. Check your connection and try again.
+            </ThemedText>
+            <Button variant="primary" style={styles.errorButton} onPress={loadEntries}>
+              Try again
+            </Button>
+          </View>
+        ) : (
         <FlatList
           data={filteredEntries}
           keyExtractor={(entry) => entry.id}
-          contentContainerStyle={styles.listContent}
+          // See the matching comment in (tabs)/index.tsx: add the device's own
+          // bottom inset on top of the tab-bar clearance so Android's
+          // 3-button/gesture nav doesn't cover the last entry.
+          contentContainerStyle={[styles.listContent, { paddingBottom: styles.listContent.paddingBottom + insets.bottom }]}
           refreshing={isLoading}
           onRefresh={loadEntries}
           ListEmptyComponent={
             !isLoading ? (
               <ThemedText variant="body" color="neutral700">
-                {entries.length === 0 ? 'No entries from other users yet.' : 'No places match your search/filter.'}
+                {entries.length === 0 ? 'No entries from other users yet.' : 'No places match your search.'}
               </ThemedText>
             ) : null
           }
@@ -147,18 +152,28 @@ export default function DiscoverScreen() {
                       <ThemedText variant="body" color="neutral600" style={styles.savedBy}>
                         saved by {item.user.display_name}
                       </ThemedText>
-                      {item.visited ? (
-                        <View style={styles.ratingRow}>
-                          <StarIcon size={15} active color={Colors.accent} />
-                          <ThemedText variant="bodyBold" color="accent700" style={styles.ratingText}>
-                            {(item.rating ?? 0).toFixed(1)}
-                          </ThemedText>
-                        </View>
-                      ) : (
-                        <Tag variant="outline" style={styles.wantToTryTag}>
-                          Want to try
-                        </Tag>
-                      )}
+                      <View style={styles.metaRow}>
+                        {item.visited ? (
+                          <View style={styles.ratingRow}>
+                            <StarIcon size={15} active color={Colors.accent} />
+                            <ThemedText variant="bodyBold" color="accent700" style={styles.ratingText}>
+                              {(item.rating ?? 0).toFixed(1)}
+                            </ThemedText>
+                          </View>
+                        ) : (
+                          <Tag variant="outline" style={styles.wantToTryTag}>
+                            Want to try
+                          </Tag>
+                        )}
+                        {item.entry_items.length > 0 && (
+                          <View style={styles.dishIndicator}>
+                            <UtensilsIcon size={12} color={Colors.neutral600} />
+                            <ThemedText variant="bodyMedium" color="neutral600" style={styles.dishIndicatorLabel}>
+                              {item.entry_items.length}
+                            </ThemedText>
+                          </View>
+                        )}
+                      </View>
                     </View>
                   </Pressable>
                 </Link>
@@ -169,9 +184,8 @@ export default function DiscoverScreen() {
             );
           }}
         />
+        )}
       </SafeAreaView>
-
-      <FloatingTabBar active="discover" />
     </ThemedView>
   );
 }
@@ -200,20 +214,32 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingHorizontal: Spacing.space6,
     paddingTop: Spacing.space3,
-  },
-  chipList: {
-    flexGrow: 0,
-  },
-  chipRow: {
-    gap: 8,
-    paddingHorizontal: Spacing.space6,
-    paddingVertical: Spacing.space3,
+    paddingBottom: Spacing.space3,
   },
   listContent: {
     gap: Spacing.space3,
     paddingHorizontal: Spacing.space6,
     paddingTop: 2,
     paddingBottom: BottomTabInset + Spacing.space6,
+  },
+  errorState: {
+    alignItems: 'center',
+    paddingHorizontal: Spacing.space6,
+    paddingTop: Spacing.space6,
+    gap: Spacing.space3,
+  },
+  errorTitle: {
+    fontSize: 22,
+  },
+  errorBody: {
+    fontSize: 15,
+    textAlign: 'center',
+    maxWidth: 280,
+  },
+  errorButton: {
+    marginTop: Spacing.space2,
+    minHeight: 50,
+    paddingHorizontal: 26,
   },
   entryCard: {
     flexDirection: 'row',
@@ -248,6 +274,12 @@ const styles = StyleSheet.create({
   savedBy: {
     fontSize: 13,
   },
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 2,
+  },
   ratingRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -257,7 +289,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   wantToTryTag: {
-    marginTop: 2,
+    marginTop: 0,
+  },
+  dishIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  dishIndicatorLabel: {
+    fontSize: 11,
   },
   addButton: {
     flexShrink: 0,

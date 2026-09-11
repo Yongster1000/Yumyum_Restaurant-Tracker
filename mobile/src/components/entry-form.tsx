@@ -2,11 +2,12 @@ import { File } from 'expo-file-system';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -17,7 +18,8 @@ import {
 
 import { Button, CircleButton } from '@/components/button';
 import { Card } from '@/components/card';
-import { CameraIcon, StarIcon, UtensilsIcon, XIcon } from '@/components/icons';
+import { CameraIcon, CheckIcon, PlusIcon, UtensilsIcon, XIcon } from '@/components/icons';
+import { StarRating } from '@/components/star-rating';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors, Radius, Spacing } from '@/constants/theme';
@@ -30,7 +32,7 @@ import {
   type PlacePrediction,
 } from '@/lib/google-places';
 import { supabase } from '@/lib/supabase';
-import type { Entry } from '@/types/database';
+import type { Entry, EntryItem } from '@/types/database';
 
 // TODO: this only dedupes against existing `places` by google_place_id (an
 // exact match on the place the user picked from Google). The brief also
@@ -49,15 +51,41 @@ function getErrorMessage(error: unknown): string {
   return String(error);
 }
 
+// Local draft shape for the dish list being edited — distinct from `EntryItem`
+// since a not-yet-saved dish has no `id`/`entry_id`/`position`/`created_at`
+// yet. `key` is a client-only identity for list rendering/updates.
+type DishDraft = {
+  key: string;
+  id?: string;
+  name: string;
+  rating: number | null;
+  note: string;
+  /** Subset of `photoUris` linked to this dish — same URI strings, same pool. */
+  photos: string[];
+};
+
+function draftFromEntryItem(item: EntryItem): DishDraft {
+  return {
+    key: item.id,
+    id: item.id,
+    name: item.name,
+    rating: item.rating,
+    note: item.note ?? '',
+    photos: item.photos ?? [],
+  };
+}
+
 type EntryFormProps = {
   mode: 'create' | 'edit';
   entry?: Entry;
   placeName?: string;
   placeAddress?: string;
+  /** Existing dishes for this entry, ordered by `position` — pass when editing. */
+  initialDishes?: EntryItem[];
   onSaved?: () => void;
 };
 
-export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: EntryFormProps) {
+export function EntryForm({ mode, entry, placeName, placeAddress, initialDishes, onSaved }: EntryFormProps) {
   const router = useRouter();
   const { session } = useAuth();
 
@@ -70,8 +98,41 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
   const [rating, setRating] = useState(entry?.rating ?? 0);
   const [comment, setComment] = useState(entry?.comment ?? '');
   const [photoUris, setPhotoUris] = useState<string[]>(entry?.photos ?? []);
+  const [dishes, setDishes] = useState<DishDraft[]>(() => (initialDishes ?? []).map(draftFromEntryItem));
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  // Key of the dish currently being edited in the photo-linking modal, or
+  // null when it's closed. A single shared modal instance (rendered once
+  // below) rather than one per dish row.
+  const [photoPickerDishKey, setPhotoPickerDishKey] = useState<string | null>(null);
+
+  const dishKeyCounter = useRef(0);
+  function nextDishKey() {
+    dishKeyCounter.current += 1;
+    return `new-${dishKeyCounter.current}`;
+  }
+
+  function addDish() {
+    setDishes((current) => [...current, { key: nextDishKey(), name: '', rating: null, note: '', photos: [] }]);
+  }
+
+  function updateDish(key: string, patch: Partial<Omit<DishDraft, 'key' | 'id'>>) {
+    setDishes((current) => current.map((dish) => (dish.key === key ? { ...dish, ...patch } : dish)));
+  }
+
+  function removeDish(key: string) {
+    setDishes((current) => current.filter((dish) => dish.key !== key));
+  }
+
+  function toggleDishPhoto(key: string, uri: string) {
+    setDishes((current) =>
+      current.map((dish) =>
+        dish.key === key
+          ? { ...dish, photos: dish.photos.includes(uri) ? dish.photos.filter((p) => p !== uri) : [...dish.photos, uri] }
+          : dish,
+      ),
+    );
+  }
 
   useEffect(() => {
     if (mode !== 'create' || selectedPlace) return;
@@ -193,7 +254,7 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
         // already saved this exact Google place, instead of duplicating it.
         const { data: existingPlace, error: lookupError } = await supabase
           .from('places')
-          .select('id, google_photo_name, cost_bracket')
+          .select('id')
           .eq('google_place_id', selectedPlace.placeId)
           .maybeSingle();
         if (lookupError) throw lookupError;
@@ -203,19 +264,16 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
 
           // Backfill any Google-sourced fields the existing row is still
           // missing (it may predate this data being fetched at all, or
-          // Google may have had nothing to return the first time) — never
-          // overwrites a value that's already set.
-          const placeUpdate: { google_photo_name?: string; cost_bracket?: string } = {};
-          if (!existingPlace.google_photo_name && selectedPlace.photoName) {
-            placeUpdate.google_photo_name = selectedPlace.photoName;
-          }
-          if (!existingPlace.cost_bracket && selectedPlace.costBracket) {
-            placeUpdate.cost_bracket = selectedPlace.costBracket;
-          }
-          if (Object.keys(placeUpdate).length > 0) {
-            const { error: updateError } = await supabase.from('places').update(placeUpdate).eq('id', placeId);
-            if (updateError) throw updateError;
-          }
+          // Google may have had nothing to return the first time). Client
+          // no longer has UPDATE on `places` — this goes through a
+          // SECURITY DEFINER RPC that `coalesce`s server-side, so it's a
+          // safe no-op when there's nothing new to fill in.
+          const { error: backfillError } = await supabase.rpc('backfill_place_details', {
+            p_place_id: placeId,
+            p_google_photo_name: selectedPlace.photoName ?? null,
+            p_cost_bracket: selectedPlace.costBracket ?? null,
+          });
+          if (backfillError) throw backfillError;
 
           const { data: existingTag, error: tagLookupError } = await supabase
             .from('place_food_types')
@@ -268,8 +326,18 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
         .single();
       if (entryError) throw entryError;
 
+      // Maps each original `photoUris[i]` to its uploaded URL, so dishes that
+      // link to a not-yet-uploaded `file://` URI can be rewritten to the real
+      // `https://` URL below. Populated below only when there are photos to
+      // upload — dishes can only ever reference a subset of `photoUris`, so
+      // it's correctly empty when `photoUris` is empty too.
+      const photoUriToUrl: Record<string, string> = {};
+
       if (photoUris.length > 0) {
         const photoUrls = await uploadPhotos(session.user.id, savedEntry.id);
+        photoUris.forEach((uri, index) => {
+          photoUriToUrl[uri] = photoUrls[index];
+        });
         const { error: photoError } = await supabase
           .from('entries')
           .update({ photos: photoUrls })
@@ -277,11 +345,50 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
         if (photoError) throw photoError;
       }
 
+      // Simple delete-and-reinsert rather than diffing — this app has a
+      // handful of users, and a dish list is small, so this is cheap enough
+      // and much easier to reason about than tracking per-row add/edit/remove.
+      const dishesToSave = dishes.filter((dish) => dish.name.trim().length > 0);
+      if (dishes.length > 0 || (initialDishes?.length ?? 0) > 0) {
+        const { error: deleteItemsError } = await supabase.from('entry_items').delete().eq('entry_id', savedEntry.id);
+        if (deleteItemsError) throw deleteItemsError;
+
+        if (dishesToSave.length > 0) {
+          const { error: insertItemsError } = await supabase.from('entry_items').insert(
+            dishesToSave.map((dish, index) => ({
+              entry_id: savedEntry.id,
+              name: dish.name.trim(),
+              rating: dish.rating,
+              note: dish.note.trim() || null,
+              // Filter against the current `photoUris` pool first (drops a
+              // photo that was removed from the entry entirely — see the
+              // remove-photo handler above), then remap each surviving local
+              // `file://` URI to its just-uploaded `https://` URL. A URI that
+              // somehow isn't in the mapping (shouldn't normally happen) is
+              // dropped rather than inserted as a broken reference.
+              photos: dish.photos
+                .filter((uri) => photoUris.includes(uri))
+                .map((uri) => photoUriToUrl[uri])
+                .filter((url): url is string => !!url),
+              position: index,
+            })),
+          );
+          if (insertItemsError) throw insertItemsError;
+        }
+      }
+
       onSaved?.();
       router.back();
+      // No `setIsSaving(false)` here: this screen is being dismissed via
+      // `router.back()` above, and setting state afterward re-renders (and
+      // changes the disabled state of) the header's close button while the
+      // modal is still mid-exit-transition — this raced react-native-screens/
+      // Fabric's teardown of the screen and crashed with "addViewAt: view
+      // already has a parent" on the icon's SvgView. Only reset on the error
+      // path below, where the screen stays mounted. `handleDelete` right
+      // below already follows this same pattern.
     } catch (error) {
       Alert.alert('Could not save entry', getErrorMessage(error));
-    } finally {
       setIsSaving(false);
     }
   }
@@ -421,13 +528,7 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
                 <ThemedText variant="bodySemibold" color="neutral600" style={styles.kicker}>
                   Your rating
                 </ThemedText>
-                <View style={styles.starRow}>
-                  {[1, 2, 3, 4, 5].map((value) => (
-                    <Pressable key={value} onPress={() => setRating(value)}>
-                      <StarIcon size={36} active={value <= rating} color={Colors.accent} />
-                    </Pressable>
-                  ))}
-                </View>
+                <StarRating value={rating} onChange={setRating} size={36} gap={10} color={Colors.accent} />
               </View>
             )}
           </Card>
@@ -455,7 +556,20 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
                 <View key={`${uri}-${index}`} style={styles.photoThumbWrapper}>
                   <Image source={{ uri }} style={styles.photoThumb} />
                   <Pressable
-                    onPress={() => setPhotoUris((current) => current.filter((_, i) => i !== index))}
+                    onPress={() => {
+                      setPhotoUris((current) => current.filter((_, i) => i !== index));
+                      // Also unlink this photo from any dish that had it —
+                      // otherwise a dish would keep pointing at a URI that's
+                      // no longer in the entry's photo pool at all. (Belt and
+                      // braces: `handleSave` also filters against the current
+                      // `photoUris` right before saving, so this isn't the
+                      // only place stale links get cleaned up.)
+                      setDishes((current) =>
+                        current.map((dish) =>
+                          dish.photos.includes(uri) ? { ...dish, photos: dish.photos.filter((p) => p !== uri) } : dish,
+                        ),
+                      );
+                    }}
                     style={styles.removePhotoButton}
                     hitSlop={8}>
                     <XIcon size={11} color="#fff" strokeWidth={3.2} />
@@ -469,6 +583,47 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
                 </ThemedText>
               </Pressable>
             </View>
+          </View>
+
+          <View style={styles.section}>
+            <View style={styles.dishesHeaderRow}>
+              <ThemedText variant="bodySemibold" color="neutral600" style={styles.kicker}>
+                Dishes
+              </ThemedText>
+              <ThemedText variant="bodySemibold" color="neutral500" style={styles.dishesHeaderMeta}>
+                {dishes.length > 0 ? `${dishes.length}` : 'optional'}
+              </ThemedText>
+            </View>
+
+            {dishes.length === 0 ? (
+              <Pressable onPress={addDish} style={styles.addDishEmptyButton}>
+                <UtensilsIcon size={18} color={Colors.neutral700} />
+                <ThemedText variant="bodyMedium" color="neutral700" style={styles.addDishEmptyLabel}>
+                  Log dishes you tried
+                </ThemedText>
+              </Pressable>
+            ) : (
+              <>
+                <View style={styles.dishList}>
+                  {dishes.map((dish) => (
+                    <DishRow
+                      key={dish.key}
+                      dish={dish}
+                      photoPoolCount={photoUris.length}
+                      onChange={(patch) => updateDish(dish.key, patch)}
+                      onRemove={() => removeDish(dish.key)}
+                      onOpenPhotoPicker={() => setPhotoPickerDishKey(dish.key)}
+                    />
+                  ))}
+                </View>
+                <Pressable onPress={addDish} style={styles.addDishButton}>
+                  <PlusIcon size={15} color={Colors.accent} />
+                  <ThemedText variant="bodySemibold" color="accent" style={styles.addDishButtonLabel}>
+                    Another dish
+                  </ThemedText>
+                </Pressable>
+              </>
+            )}
           </View>
 
           <Button block onPress={handleSave} disabled={!canSave} style={styles.saveButton} textStyle={styles.saveButtonLabel}>
@@ -493,7 +648,145 @@ export function EntryForm({ mode, entry, placeName, placeAddress, onSaved }: Ent
           </ThemedText>
         </View>
       )}
+
+      <DishPhotoPickerModal
+        visible={photoPickerDishKey !== null}
+        photoUris={photoUris}
+        selectedPhotos={dishes.find((dish) => dish.key === photoPickerDishKey)?.photos ?? []}
+        onToggle={(uri) => {
+          if (photoPickerDishKey) toggleDishPhoto(photoPickerDishKey, uri);
+        }}
+        onClose={() => setPhotoPickerDishKey(null)}
+      />
     </ThemedView>
+  );
+}
+
+// One dish card in the Dishes section: a name field that looks like plain
+// heading text rather than a boxed input (borderless `TextInput`, with a
+// bottom rule that only appears on focus as the "this is editable" affordance
+// and cursor hint), a remove button, a small half-star rating row, and a note
+// field with the same look.
+function DishRow({
+  dish,
+  photoPoolCount,
+  onChange,
+  onRemove,
+  onOpenPhotoPicker,
+}: {
+  dish: DishDraft;
+  /** Size of the entry's whole `photoUris` pool — the "+" tile only makes sense once there's at least one photo to link. */
+  photoPoolCount: number;
+  onChange: (patch: Partial<Omit<DishDraft, 'key' | 'id'>>) => void;
+  onRemove: () => void;
+  onOpenPhotoPicker: () => void;
+}) {
+  const [nameFocused, setNameFocused] = useState(false);
+  const [noteFocused, setNoteFocused] = useState(false);
+
+  return (
+    <Card style={styles.dishCard}>
+      <View style={styles.dishNameRow}>
+        <TextInput
+          value={dish.name}
+          onChangeText={(name) => onChange({ name })}
+          onFocus={() => setNameFocused(true)}
+          onBlur={() => setNameFocused(false)}
+          placeholder="Dish name"
+          placeholderTextColor={Colors.neutral500}
+          selectionColor={Colors.accent}
+          style={[styles.dishNameInput, nameFocused && styles.dishInputFocused]}
+        />
+        <Pressable onPress={onRemove} hitSlop={8} style={styles.dishRemoveButton}>
+          <XIcon size={13} color={Colors.neutral600} />
+        </Pressable>
+      </View>
+
+      <StarRating value={dish.rating ?? 0} onChange={(next) => onChange({ rating: next })} size={22} gap={6} color={Colors.accent} />
+
+      <TextInput
+        value={dish.note}
+        onChangeText={(note) => onChange({ note })}
+        onFocus={() => setNoteFocused(true)}
+        onBlur={() => setNoteFocused(false)}
+        placeholder="Add a note"
+        placeholderTextColor={Colors.neutral500}
+        selectionColor={Colors.accent}
+        style={[styles.dishNoteInput, noteFocused && styles.dishInputFocused]}
+      />
+
+      {(dish.photos.length > 0 || photoPoolCount > 0) && (
+        <View style={styles.dishPhotoRow}>
+          {dish.photos.map((uri, index) => (
+            <View key={`${uri}-${index}`} style={styles.dishPhotoThumbWrapper}>
+              <Image source={{ uri }} style={styles.dishPhotoThumb} />
+              <Pressable
+                onPress={() => onChange({ photos: dish.photos.filter((p) => p !== uri) })}
+                style={styles.removeDishPhotoButton}
+                hitSlop={8}>
+                <XIcon size={9} color="#fff" strokeWidth={3.2} />
+              </Pressable>
+            </View>
+          ))}
+          {photoPoolCount > 0 && (
+            <Pressable onPress={onOpenPhotoPicker} style={styles.addDishPhotoTile} hitSlop={4}>
+              <PlusIcon size={16} color={Colors.neutral700} />
+            </Pressable>
+          )}
+        </View>
+      )}
+    </Card>
+  );
+}
+
+// Shared photo-linking modal for the Dishes section — one instance mounted
+// once in `EntryForm`, driven by whichever dish's key is currently "open".
+// Shows every photo currently in the entry's `photoUris` pool (not just
+// unlinked ones, since the same photo can link to multiple dishes) with a
+// checkmark badge over whichever are already linked to this dish; tapping
+// toggles. Mirrors `PhotoViewer`'s use of RN's `Modal` for a full-screen
+// overlay rather than any other modal mechanism.
+function DishPhotoPickerModal({
+  visible,
+  photoUris,
+  selectedPhotos,
+  onToggle,
+  onClose,
+}: {
+  visible: boolean;
+  photoUris: string[];
+  selectedPhotos: string[];
+  onToggle: (uri: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet">
+      <ThemedView type="background" style={styles.flex}>
+        <View style={styles.pickerHeader}>
+          <ThemedText variant="heading" style={styles.pickerTitle}>
+            Link photos
+          </ThemedText>
+          <CircleButton size={36} onPress={onClose}>
+            <XIcon size={16} color={Colors.neutral700} />
+          </CircleButton>
+        </View>
+        <ScrollView contentContainerStyle={styles.pickerGrid}>
+          {photoUris.map((uri, index) => {
+            const selected = selectedPhotos.includes(uri);
+            return (
+              <Pressable key={`${uri}-${index}`} onPress={() => onToggle(uri)} style={styles.pickerThumbWrapper}>
+                <Image source={{ uri }} style={[styles.pickerThumb, selected && styles.pickerThumbSelected]} />
+                {selected && (
+                  <View style={styles.pickerCheckBadge}>
+                    <CheckIcon size={13} color="#fff" strokeWidth={3} />
+                  </View>
+                )}
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </ThemedView>
+    </Modal>
   );
 }
 
@@ -643,6 +936,161 @@ const styles = StyleSheet.create({
   },
   addPhotoLabel: {
     fontSize: 11,
+  },
+  dishesHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dishesHeaderMeta: {
+    fontSize: 12,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  addDishEmptyButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 56,
+    borderRadius: Radius.pill,
+    borderWidth: 1.5,
+    borderColor: Colors.neutral400,
+    borderStyle: 'dashed',
+  },
+  addDishEmptyLabel: {
+    fontSize: 15,
+  },
+  dishList: {
+    gap: Spacing.space3,
+  },
+  dishCard: {
+    gap: Spacing.space2,
+    borderRadius: Radius.lg,
+  },
+  dishNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.space2,
+  },
+  dishNameInput: {
+    flex: 1,
+    fontSize: 17,
+    fontFamily: 'Caprasimo_400Regular',
+    color: Colors.text,
+    padding: 0,
+    borderBottomWidth: 1,
+    borderBottomColor: 'transparent',
+  },
+  dishNoteInput: {
+    fontSize: 14,
+    fontFamily: 'Figtree_400Regular',
+    color: Colors.neutral600,
+    padding: 0,
+    borderBottomWidth: 1,
+    borderBottomColor: 'transparent',
+  },
+  dishInputFocused: {
+    borderBottomColor: Colors.accent,
+  },
+  dishRemoveButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.neutral200,
+    flexShrink: 0,
+  },
+  dishPhotoRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 2,
+  },
+  dishPhotoThumbWrapper: {
+    position: 'relative',
+  },
+  dishPhotoThumb: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+  },
+  removeDishPhotoButton: {
+    position: 'absolute',
+    top: 3,
+    right: 3,
+    width: 17,
+    height: 17,
+    borderRadius: 8.5,
+    backgroundColor: Colors.neutral900,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addDishPhotoTile: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: Colors.neutral400,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.space6,
+    paddingTop: Spacing.space6,
+    paddingBottom: Spacing.space2,
+  },
+  pickerTitle: {
+    fontSize: 20,
+  },
+  pickerGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    padding: Spacing.space6,
+  },
+  pickerThumbWrapper: {
+    position: 'relative',
+  },
+  pickerThumb: {
+    width: 96,
+    height: 96,
+    borderRadius: 24,
+    opacity: 1,
+  },
+  pickerThumbSelected: {
+    opacity: 0.55,
+  },
+  pickerCheckBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: Colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addDishButton: {
+    flexDirection: 'row',
+    alignSelf: 'flex-start',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: Spacing.space1,
+    paddingVertical: Spacing.space2,
+    paddingHorizontal: Spacing.space4,
+    borderRadius: Radius.pill,
+    borderWidth: 1.5,
+    borderColor: Colors.accent,
+  },
+  addDishButtonLabel: {
+    fontSize: 14,
   },
   saveButton: {
     minHeight: 56,
